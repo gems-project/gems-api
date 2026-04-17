@@ -120,9 +120,9 @@ _DROP_COL_NORMS = frozenset(
         "sequence",
         "workbookfile",
         "workbookpath",
-        "gateruneid",
-        "ingestruneid",  # ingestRunId
+        "gaterunid",  # gateRunId / ingestRunId
         "ingestid",
+        "excelsourcerow",  # excelSourceRow
     }
 )
 
@@ -144,6 +144,12 @@ def _strip_tz_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.select_dtypes(include=["datetimetz"]).columns:
         df[col] = df[col].dt.tz_convert("UTC").dt.tz_localize(None)
     return df
+
+
+# Excel 2007+ sheet limit (openpyxl enforces this).
+_EXCEL_MAX_ROWS = 1_048_576
+# Full HTML for millions of rows is unusable and can exhaust memory; preview only.
+_HTML_PREVIEW_ROWS = 10_000
 
 
 def _write_html(path: Path, title: str, table_html: str) -> None:
@@ -180,13 +186,47 @@ def main() -> None:
         df = _strip_tz_for_excel(df)
 
         xlsx = out / f"{stem}.xlsx"
+        csv_path = out / f"{stem}.csv"
         html_path = out / f"{stem}.html"
-        df.to_excel(xlsx, index=False, engine="openpyxl")
-        inner = df.to_html(
+
+        n = len(df)
+        if n <= _EXCEL_MAX_ROWS:
+            df.to_excel(xlsx, index=False, engine="openpyxl")
+            print(f"  {xlsx.name}", flush=True)
+        else:
+            print(
+                f"  (skipped {xlsx.name}: {n:,} rows exceeds Excel limit "
+                f"{_EXCEL_MAX_ROWS:,}; writing CSV instead)",
+                flush=True,
+            )
+            df.to_csv(csv_path, index=False, encoding="utf-8")
+            print(f"  {csv_path.name}", flush=True)
+
+        if n <= _HTML_PREVIEW_ROWS:
+            html_df = df
+            html_title = f"{stem} — {n} rows × {len(df.columns)} cols"
+        else:
+            html_df = df.head(_HTML_PREVIEW_ROWS)
+            html_title = (
+                f"{stem} — preview: first {_HTML_PREVIEW_ROWS:,} of {n:,} rows × "
+                f"{len(df.columns)} cols"
+            )
+        inner = html_df.to_html(
             index=False, escape=True, border=0, classes="data", justify="left"
         )
-        _write_html(html_path, f"{stem} — {len(df)} rows × {len(df.columns)} cols", inner)
-        print(f"  {xlsx.name}", flush=True)
+        if n > _HTML_PREVIEW_ROWS:
+            full_hint = (
+                ".csv"
+                if n > _EXCEL_MAX_ROWS
+                else ".xlsx"
+            )
+            inner = (
+                f'<p class="note" style="margin:0 0 12px;padding:8px;background:#fff3cd;'
+                f'border-radius:6px;">Showing first {_HTML_PREVIEW_ROWS:,} rows only. '
+                f"Open the <b>{full_hint}</b> export for the full table.</p>"
+                + inner
+            )
+        _write_html(html_path, html_title, inner)
         print(f"  {html_path.name}", flush=True)
 
     print(f"Done. Output folder: {out}", flush=True)

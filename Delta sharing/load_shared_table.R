@@ -168,7 +168,8 @@ find_config_path <- function() {
   gsub("[^A-Za-z0-9._-]", "_", raw)
 }
 
-# sequence, workbookFile, workbookPath, gateRunId, ingestRunId / ingestId (case-insensitive)
+# Drop lineage / ingest metadata (match case-insensitive; ignore spaces/underscores in names).
+# Keep in sync with load_shared_table.py `_DROP_COL_NORMS`.
 .drop_pipeline_cols <- function(df) {
   if (!ncol(df)) {
     return(df)
@@ -176,11 +177,117 @@ find_config_path <- function() {
   norm <- function(x) gsub("[^a-z0-9]", "", tolower(as.character(x)))
   drop_norms <- c(
     "sequence", "workbookfile", "workbookpath",
-    "gateruneid", "ingestruneid", "ingestid"
+    "gaterunid", "ingestid", "excelsourcerow"
   )
   nms <- names(df)
   keep <- !vapply(nms, function(nm) norm(nm) %in% drop_norms, logical(1L))
   df[, keep, drop = FALSE]
+}
+
+# Excel 2007+ sheet limit (writexl / Excel).
+EXCEL_MAX_ROWS <- 1048576L
+# Full HTML for millions of rows is unusable; preview only.
+HTML_PREVIEW_ROWS <- 10000L
+
+.html_escape <- function(x) {
+  x <- as.character(x)
+  x <- gsub("&", "&amp;", x, fixed = TRUE)
+  x <- gsub("<", "&lt;", x, fixed = TRUE)
+  x <- gsub(">", "&gt;", x, fixed = TRUE)
+  x <- gsub("\"", "&quot;", x, fixed = TRUE)
+  x[is.na(x)] <- ""
+  x
+}
+
+.strip_tz_for_excel <- function(df) {
+  if (!ncol(df)) {
+    return(df)
+  }
+  for (j in seq_len(ncol(df))) {
+    x <- df[[j]]
+    if (inherits(x, "POSIXct")) {
+      utc <- as.POSIXct(format(x, tz = "UTC"), tz = "UTC")
+      attr(utc, "tzone") <- NULL
+      df[[j]] <- utc
+    }
+  }
+  df
+}
+
+.df_to_html_table <- function(df) {
+  cn <- names(df)
+  th <- paste0("<th>", .html_escape(cn), "</th>", collapse = "")
+  if (!nrow(df)) {
+    return(paste0(
+      "<table class=\"data\" border=\"0\"><thead><tr>", th,
+      "</tr></thead><tbody></tbody></table>"
+    ))
+  }
+  parts <- vector("list", nrow(df))
+  for (i in seq_len(nrow(df))) {
+    cells <- vapply(seq_len(ncol(df)), function(k) {
+      .html_escape(df[[k]][i])
+    }, "")
+    parts[[i]] <- paste0("<tr>", paste0("<td>", cells, "</td>", collapse = ""), "</tr>")
+  }
+  paste0(
+    "<table class=\"data\" border=\"0\"><thead><tr>", th,
+    "</tr></thead><tbody>\n", paste0(parts, collapse = "\n"), "\n</tbody></table>"
+  )
+}
+
+.write_html_doc <- function(path, title, inner_body) {
+  doc <- paste0(
+    "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"/><title>",
+    .html_escape(title), "</title>\n<style>\n",
+    "body{font-family:system-ui,sans-serif;margin:16px;background:#f5f5f5;}\n",
+    ".wrap{overflow:auto;max-width:100%;background:#fff;padding:12px;border-radius:8px;}\n",
+    "table.data{border-collapse:collapse;font-size:12px;}\n",
+    "table.data th,table.data td{border:1px solid #ccc;padding:6px 10px;}\n",
+    "table.data th{background:#222;color:#fff;position:sticky;top:0;}\n",
+    "</style></head><body><p><b>", .html_escape(title), "</b></p>",
+    "<div class=\"wrap\">", inner_body, "</div></body></html>"
+  )
+  writeLines(doc, path, useBytes = FALSE)
+}
+
+.write_table_exports <- function(df, stem, out_dir) {
+  xlsx_path <- file.path(out_dir, paste0(stem, ".xlsx"))
+  csv_path <- file.path(out_dir, paste0(stem, ".csv"))
+  html_path <- file.path(out_dir, paste0(stem, ".html"))
+  n <- nrow(df)
+  if (n <= EXCEL_MAX_ROWS) {
+    writexl::write_xlsx(df, path = xlsx_path)
+    message("  ", basename(xlsx_path))
+  } else {
+    message(
+      "  (skipped ", basename(xlsx_path), ": ", format(n, big.mark = ","),
+      " rows exceeds Excel limit ", format(EXCEL_MAX_ROWS, big.mark = ","),
+      "; writing CSV instead)"
+    )
+    utils::write.csv(df, csv_path, row.names = FALSE, fileEncoding = "UTF-8")
+    message("  ", basename(csv_path))
+  }
+  if (n <= HTML_PREVIEW_ROWS) {
+    html_df <- df
+    html_title <- paste0(stem, " — ", n, " rows × ", ncol(df), " cols")
+    inner <- .df_to_html_table(html_df)
+  } else {
+    html_df <- head(df, HTML_PREVIEW_ROWS)
+    html_title <- paste0(
+      stem, " — preview: first ", format(HTML_PREVIEW_ROWS, big.mark = ","), " of ",
+      format(n, big.mark = ","), " rows × ", ncol(df), " cols"
+    )
+    full_ext <- if (n > EXCEL_MAX_ROWS) ".csv" else ".xlsx"
+    inner <- paste0(
+      "<p class=\"note\" style=\"margin:0 0 12px;padding:8px;background:#fff3cd;",
+      "border-radius:6px;\">Showing first ", format(HTML_PREVIEW_ROWS, big.mark = ","),
+      " rows only. Open the <b>", full_ext, "</b> export for the full table.</p>",
+      .df_to_html_table(html_df)
+    )
+  }
+  .write_html_doc(html_path, html_title, inner)
+  message("  ", basename(html_path))
 }
 
 .read_table_parquet <- function(prof, share, schema, table_name) {
@@ -249,12 +356,14 @@ load_gems_tables <- function(client = gems_client(), write_xlsx = TRUE) {
     stem <- .safe_stem(t$share, t$schema, t$name)
     names(result)[i] <- stem
     result[[i]] <- .read_table_parquet(client$profile, t$share, t$schema, t$name)
-    if (isTRUE(write_xlsx) && nrow(result[[i]]) > 0L) {
-      writexl::write_xlsx(
-        result[[i]],
-        path = file.path(out_dir, paste0(stem, ".xlsx"))
-      )
+    if (isTRUE(write_xlsx)) {
+      message("Loading ", t$share, ".", t$schema, ".", t$name, " ...")
+      df <- .strip_tz_for_excel(result[[i]])
+      .write_table_exports(df, stem, out_dir)
     }
+  }
+  if (isTRUE(write_xlsx)) {
+    message("Done. Output folder: ", out_dir)
   }
   result
 }
