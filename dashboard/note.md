@@ -247,6 +247,198 @@ This matches the requirement: users may enter app shell, but only allowlisted us
 - `tools/deploy_dashboard.ps1`  
   Official dashboard deploy script: package, configure startup, deploy, restart.
 
+## Azure Build and Deployment Procedure (Detailed)
+
+This section is the full "how we built it in Azure" procedure, including what
+was created, why each resource exists, and how authentication/authorization are
+enforced.
+
+### A) Azure resources created and purpose
+
+#### 1) Web App: `gems-dashboard`
+
+- **Resource type:** Azure App Service (Linux Web App)
+- **Purpose:** Host and run the Streamlit dashboard runtime (`app.py` + pages).
+- **Why this resource:** Provides managed Python runtime, Entra integration
+  (Easy Auth), app settings, deployment slots/logs, and URL hosting.
+
+Key configuration choices used:
+
+- Publish model: Code
+- Runtime: Python 3.12 (3.11 also valid)
+- OS: Linux
+- App name: `gems-dashboard`
+- Resource group: `GEMS`
+
+#### 2) Storage account + Table: `gemsDownloadWatermarks`
+
+- **Resource type:** Azure Storage Account (Table service)
+- **Table name:** `gemsDownloadWatermarks`
+- **Purpose:** Persist per-user watermark checkpoints for incremental CSV
+  downloads.
+- **Why this resource:** Lets Download page return only rows newer than a
+  user's last export position, instead of forcing full table download each time.
+
+How it is used by the app:
+
+- `dashboard/gems_watermarks.py` reads/writes watermark records by user/table.
+- `dashboard/page_download.py` offers full vs incremental export behavior.
+
+#### 3) Microsoft Entra app objects (created by Authentication setup)
+
+Enabling App Service Authentication with Microsoft creates/uses:
+
+- **App Registration** (application definition),
+- **Enterprise Application** (service principal instance in tenant).
+
+Purpose:
+
+- Handle sign-in (Easy Auth) before requests hit Streamlit.
+- Expose identity headers to app (`X-MS-CLIENT-PRINCIPAL-NAME`).
+
+### B) Authentication and Authorization model (final state)
+
+This project ended with a two-layer access design:
+
+#### Layer 1: Sign-in authentication (Azure Easy Auth / Entra)
+
+- Enforced at App Service edge (before Python code).
+- If not signed in, user is redirected to Microsoft login.
+
+Current decisions:
+
+- App registration supported account type: **My organization only** (single tenant).
+- Enterprise application `Assignment required`: **No**.
+
+Meaning:
+
+- Cornell tenant users can sign in.
+- Invited guest users in Cornell tenant can sign in.
+- No pre-assignment required for sign-in itself.
+
+#### Layer 2: In-app data authorization (dashboard code)
+
+- Enforced inside dashboard pages through `require_authorized_user()`.
+- Home page remains visible to signed-in users.
+- Data pages (Explore/Modeling/Chat/Download) require allowlist match.
+
+Control variables:
+
+- `ALLOWED_USERS` (exact email/UPN list)
+- `ALLOWED_DOMAINS` (domain list)
+
+Policy:
+
+- User is authorized if in `ALLOWED_USERS` OR domain in `ALLOWED_DOMAINS`.
+- If both vars are empty, access is open to any signed-in user.
+
+### C) Azure Portal setup procedure (step-by-step)
+
+#### Step 1: Create the web app (`gems-dashboard`)
+
+1. Azure Portal -> Create Resource -> Web App.
+2. Select subscription/resource group (`GEMS`).
+3. Name app `gems-dashboard`.
+4. Runtime Python 3.12, Linux.
+5. Create.
+
+#### Step 2: Enable App Service Authentication
+
+1. Open `gems-dashboard` (Web App resource).
+2. Settings -> Authentication.
+3. Add identity provider -> Microsoft.
+4. Require authentication (redirect unauthenticated users to Microsoft login).
+
+Outcome:
+
+- App Registration + Enterprise Application objects are available in Entra.
+
+#### Step 3: Confirm Enterprise App policy
+
+1. Microsoft Entra ID -> Enterprise applications -> `gems-dashboard`.
+2. Properties -> `Assignment required?`
+3. Set to **No** for current model (sign-in open to valid tenant/guest users).
+
+#### Step 4: Create storage table for incremental downloads
+
+1. Create Storage Account (if needed).
+2. Storage account -> Data storage -> Tables -> + Table.
+3. Create table `gemsDownloadWatermarks`.
+4. Copy storage connection string (Access keys) for app settings.
+
+#### Step 5: Set Web App environment variables
+
+Web App -> Settings -> Environment variables -> App settings:
+
+- Databricks:
+  - `DATABRICKS_HOST`
+  - `DATABRICKS_HTTP_PATH`
+  - `DATABRICKS_TOKEN`
+  - `GEMS_CATALOG`
+  - `GEMS_SCHEMA`
+  - `ALLOWED_TABLES`
+- OpenAI:
+  - `OPENAI_API_KEY`
+  - `OPENAI_MODEL`
+  - `OPENAI_CHAT_MODEL`
+- Watermarks:
+  - `AZURE_TABLES_CONNECTION_STRING`
+  - `AZURE_TABLES_NAME=gemsDownloadWatermarks`
+- App-level authorization:
+  - `ALLOWED_USERS` (comma-separated)
+  - optional `ALLOWED_DOMAINS`
+
+Apply changes (App Service restarts automatically).
+
+### D) Deployment procedure used (code to running app)
+
+#### Preferred deployment command
+
+From repository root:
+
+`.\tools\deploy_dashboard.ps1 -ResourceGroup GEMS -AppName gems-dashboard -AsyncDeploy`
+
+What this script does:
+
+1. Builds `gems-dashboard.zip` from selected `dashboard/` files.
+2. Sets startup command:
+   `python -m streamlit run app.py --server.port 8000 --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false`
+3. Deploys zip via Azure CLI.
+4. Restarts web app.
+5. Prints default URL.
+
+#### Why `-AsyncDeploy` was important
+
+- Sync deployment occasionally appears stuck in "Starting the site..." polling.
+- Async avoids long blocking wait and still uploads/deploys correctly.
+- Verification done via portal logs/default URL health.
+
+### E) Verification checklist after deployment
+
+1. Open default URL for `gems-dashboard`.
+2. Confirm Microsoft sign-in redirect occurs.
+3. Confirm Home page renders correctly (hero/logos, no raw HTML).
+4. Confirm data page authorization behavior:
+   - allowlisted user: data pages open.
+   - non-allowlisted signed-in user: blocked on data pages with clear message.
+5. Confirm Databricks connection loads table lists.
+6. Confirm incremental download mode works when watermark settings are present.
+
+### F) Guest user onboarding procedure (current model)
+
+If user is external to Cornell tenant:
+
+1. Microsoft Entra ID -> Users -> New user -> Invite external user.
+2. User accepts invitation email.
+3. Add their sign-in identity to `ALLOWED_USERS` in Web App app settings.
+4. Ask user to sign in and verify data-page access.
+
+Note:
+
+- Large guest list in tenant-wide Users view is normal and not app-specific.
+- Enterprise app Users/Groups list is assignment metadata; with
+  `Assignment required = No`, it is not the primary data-access control.
+
 ## Practical Runbooks
 
 ### Local run
