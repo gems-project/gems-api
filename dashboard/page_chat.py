@@ -20,7 +20,7 @@ load_dotenv(_DASHBOARD_ROOT / ".env", override=True)
 if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
-from gems_auth import get_current_user  # noqa: E402
+from gems_auth import require_authorized_user  # noqa: E402
 from gems_chat import run_agent  # noqa: E402
 from gems_data import GemsData  # noqa: E402
 from gems_ui import page_header, sidebar_user  # noqa: E402
@@ -32,7 +32,7 @@ page_header(
     "schemas, and runs read-only SELECT queries against the GEMS warehouse.",
 )
 
-user = get_current_user()
+user = require_authorized_user()
 sidebar_user(user)
 
 st.sidebar.markdown("**Example questions**")

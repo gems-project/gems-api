@@ -29,7 +29,7 @@ if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
 from gems_ai import interpret_plot  # noqa: E402
-from gems_auth import get_current_user  # noqa: E402
+from gems_auth import require_authorized_user  # noqa: E402
 from gems_data import (  # noqa: E402
     GemsData,
     REDACTED_COLUMNS,
@@ -45,7 +45,7 @@ page_header(
     "dataset — optionally across several joined tables.",
 )
 
-user = get_current_user()
+user = require_authorized_user()
 sidebar_user(user)
 
 try:

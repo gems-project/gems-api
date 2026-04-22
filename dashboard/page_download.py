@@ -26,7 +26,7 @@ load_dotenv(_DASHBOARD_ROOT / ".env", override=True)
 if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
-from gems_auth import get_current_user  # noqa: E402
+from gems_auth import require_authorized_user  # noqa: E402
 from gems_data import GemsData, watermark_candidates  # noqa: E402
 from gems_ui import page_header, sidebar_user  # noqa: E402
 from gems_watermarks import WatermarkStore  # noqa: E402
@@ -37,7 +37,7 @@ page_header(
     "Grab the whole table, or only the new rows since your last download.",
 )
 
-user = get_current_user()
+user = require_authorized_user()
 sidebar_user(user)
 
 try:

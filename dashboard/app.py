@@ -26,7 +26,7 @@ load_dotenv(_DASHBOARD_ROOT / ".env", override=True)
 if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
-from gems_auth import get_current_user  # noqa: E402
+from gems_auth import get_current_user, is_authorized  # noqa: E402
 from gems_data import GemsData  # noqa: E402
 from gems_logo_data import (  # noqa: E402
     GEMS_LOGO_PNG_B64,
@@ -153,9 +153,16 @@ def _hero_html() -> str:
 def _render_home() -> None:
     user = get_current_user()
     sidebar_user(user)
-    st.sidebar.caption(
-        "Use the links above to explore data, download CSVs, fit models, and chat."
-    )
+    authorized = is_authorized(user)
+    if authorized:
+        st.sidebar.caption(
+            "Use the links above to explore data, download CSVs, fit models, and chat."
+        )
+    else:
+        st.sidebar.warning(
+            "You are signed in but not yet authorized to access the data pages. "
+            "Contact the dashboard administrator to request access."
+        )
 
     # Hero via st.markdown so embedded <img data:...> logos render (iframe CSP blocks them).
     st.markdown(_hero_html(), unsafe_allow_html=True)
