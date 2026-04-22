@@ -439,6 +439,25 @@ Note:
 - Enterprise app Users/Groups list is assignment metadata; with
   `Assignment required = No`, it is not the primary data-access control.
 
+### G) Future hardening note: switching to "specific identities"
+
+If we later switch Web App Authentication -> Microsoft provider ->
+`Identity requirement` from "Allow requests from any identity" to
+"Allow requests from specific identities", use this safe rollout:
+
+1. First have target users sign in at least once while permissive mode is active
+   (or otherwise confirm their Entra identity objects exist).
+2. Add those exact identities to the specific-identities list.
+3. Keep at least one break-glass admin account in the list.
+4. Then switch to specific identities and test with one internal + one guest user.
+
+Important:
+
+- This mode depends on valid Entra identity objects/tokens, not on invitation
+  email delivery itself.
+- If invitation emails are delayed/filtered, existing confirmed identity objects
+  can still be allowlisted directly.
+
 ## Practical Runbooks
 
 ### Local run
