@@ -3,3 +3,4 @@ uvicorn[standard]>=0.27.0
 gunicorn>=21.0.0
 python-dotenv>=1.0.0
 databricks-sql-connector>=3.0.0
+sqlglot>=23.0.0

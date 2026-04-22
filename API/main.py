@@ -10,18 +10,21 @@ from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 
 # Local: API/.env. Azure: use Application settings (env vars); .env optional if present.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-app = FastAPI(title="GEMS Gold Export API", version="0.1.0")
+app = FastAPI(title="GEMS Gold Export API", version="0.3.0")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-_TABLE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+_IDENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+# Allow digits, T, Z, space, dash, colon, dot, plus (ISO-8601 timestamps or plain ints/decimals).
+_SINCE_VALUE_RE = re.compile(r"^[0-9A-Za-z\-:.+ ]{1,64}$")
 
 
 def _cfg() -> dict:
@@ -33,7 +36,7 @@ def _cfg() -> dict:
         "http_path": os.getenv("DATABRICKS_HTTP_PATH", "").strip(),
         "token": os.getenv("DATABRICKS_TOKEN", "").strip(),
         "catalog": os.getenv("GEMS_CATALOG", "gems_catalog").strip(),
-        "schema": os.getenv("GEMS_SCHEMA", "gems_schema").strip(),
+        "schema": os.getenv("GEMS_SCHEMA", "gold_v1").strip(),
         "api_key": os.getenv("GEMS_API_KEY", "").strip(),
         "allowed": _parse_allowed_tables(os.getenv("ALLOWED_TABLES", "")),
         "max_rows": int(os.getenv("MAX_EXPORT_ROWS", "100000")),
@@ -56,7 +59,7 @@ def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> st
 
 def _validate_table_name(table: str) -> str:
     t = table.strip()
-    if not t or not _TABLE_RE.match(t):
+    if not t or not _IDENT_RE.match(t):
         raise HTTPException(400, "Invalid table name")
     allowed = _cfg()["allowed"]
     if not allowed:
@@ -64,19 +67,6 @@ def _validate_table_name(table: str) -> str:
     if t not in allowed:
         raise HTTPException(403, "Table not allowed for this API key")
     return t
-
-
-@app.get("/health")
-def health():
-    c = _cfg()
-    ok = bool(c["host"] and c["http_path"] and c["token"] and c["api_key"] and c["allowed"])
-    return {"status": "ok" if ok else "degraded", "allowed_table_count": len(c["allowed"])}
-
-
-@app.get("/tables")
-def list_tables(_: Annotated[str, Depends(get_api_key)]):
-    """Tables this API key may export (allowlist)."""
-    return {"tables": sorted(_cfg()["allowed"])}
 
 
 def _connect_db():
@@ -93,15 +83,150 @@ def _connect_db():
     )
 
 
+def _describe_columns(table: str) -> list[dict]:
+    """Return [{'name','type'}, ...] via DESCRIBE TABLE on an allowlisted fully-qualified table."""
+    c = _cfg()
+    fq = f"{c['catalog']}.{c['schema']}.{table}"
+    try:
+        conn = _connect_db()
+        cur = conn.cursor()
+        try:
+            cur.execute(f"DESCRIBE TABLE {fq}")
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Databricks DESCRIBE failed: {e!s}") from e
+
+    cols: list[dict] = []
+    for row in rows:
+        name = str(row[0]) if len(row) > 0 and row[0] is not None else ""
+        # DESCRIBE TABLE output ends with blank row(s) and partition info; skip them.
+        if not name or name.startswith("#") or name.strip() == "":
+            break
+        dtype = str(row[1]) if len(row) > 1 and row[1] is not None else ""
+        cols.append({"name": name, "type": dtype})
+    return cols
+
+
+def _validate_since_column(table: str, col: str) -> dict:
+    """Ensure `col` exists on `table` and return its column info (name, type)."""
+    if not _IDENT_RE.match(col):
+        raise HTTPException(400, "Invalid since_col")
+    schema = _describe_columns(table)
+    for c in schema:
+        if c["name"] == col:
+            return c
+    raise HTTPException(400, f"Column '{col}' not found on table '{table}'")
+
+
+def _format_since_literal(value: str, col_type: str) -> str:
+    """Return a safe SQL literal for the WHERE clause based on the column's type."""
+    if not _SINCE_VALUE_RE.match(value):
+        raise HTTPException(400, "Invalid since_value format")
+    t = col_type.lower()
+    # Integer-like types: emit as number; reject non-digits.
+    if any(k in t for k in ("int", "long", "bigint", "short", "tinyint")):
+        if not re.match(r"^-?\d+$", value):
+            raise HTTPException(400, "since_value must be an integer for this column")
+        return value
+    # Numeric types: decimal / double / float.
+    if any(k in t for k in ("decimal", "double", "float", "numeric")):
+        if not re.match(r"^-?\d+(\.\d+)?$", value):
+            raise HTTPException(400, "since_value must be numeric for this column")
+        return value
+    # Timestamp / date / string: quote as string literal; no quotes possible because regex forbids them.
+    return f"'{value}'"
+
+
+@app.get("/health")
+def health():
+    c = _cfg()
+    ok = bool(c["host"] and c["http_path"] and c["token"] and c["api_key"] and c["allowed"])
+    return {"status": "ok" if ok else "degraded", "allowed_table_count": len(c["allowed"])}
+
+
+@app.get("/tables")
+def list_tables(_: Annotated[str, Depends(get_api_key)]):
+    """Tables this API key may export (allowlist)."""
+    return {"tables": sorted(_cfg()["allowed"])}
+
+
+@app.get("/schema/{table}")
+def get_schema(table: str, _: Annotated[str, Depends(get_api_key)]):
+    """Return column name/type list for an allowlisted table."""
+    t = _validate_table_name(table)
+    return {"table": t, "columns": _describe_columns(t)}
+
+
+@app.get("/preview/{table}")
+def preview(
+    table: str,
+    _: Annotated[str, Depends(get_api_key)],
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """Return up to `limit` rows as JSON for quick browsing."""
+    t = _validate_table_name(table)
+    c = _cfg()
+    fq = f"{c['catalog']}.{c['schema']}.{t}"
+    sql = f"SELECT * FROM {fq} LIMIT {int(limit)}"
+    try:
+        conn = _connect_db()
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description] if cur.description else []
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Databricks query failed: {e!s}") from e
+
+    data = [dict(zip(columns, [_json_safe(v) for v in r], strict=False)) for r in rows]
+    return {"table": t, "columns": columns, "rows": data}
+
+
+def _json_safe(v):
+    """Convert non-JSON-serializable values (Decimal, datetime, date) to strings."""
+    try:
+        import datetime as _dt
+        from decimal import Decimal
+
+        if isinstance(v, (Decimal,)):
+            return str(v)
+        if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+            return v.isoformat()
+    except Exception:
+        pass
+    return v
+
+
 @app.get("/export/{table}.csv")
-def export_csv(table: str, _: Annotated[str, Depends(get_api_key)]):
+def export_csv(
+    table: str,
+    _: Annotated[str, Depends(get_api_key)],
+    since_col: str | None = Query(None, description="Optional watermark column (must exist on table)"),
+    since_value: str | None = Query(None, description="Return rows WHERE since_col > since_value"),
+):
     """
     Download allowlisted table as CSV. Latest snapshot from Databricks (warehouse sees current Delta state).
+    If both `since_col` and `since_value` are provided, only rows strictly greater than `since_value` are returned.
     """
     t = _validate_table_name(table)
     c = _cfg()
     fq = f"{c['catalog']}.{c['schema']}.{t}"
-    sql = f"SELECT * FROM {fq} LIMIT {c['max_rows']}"
+
+    where = ""
+    if since_col and since_value is not None:
+        col_info = _validate_since_column(t, since_col)
+        literal = _format_since_literal(since_value, col_info["type"])
+        where = f" WHERE {since_col} > {literal}"
+    elif since_col or since_value:
+        raise HTTPException(400, "Provide both since_col and since_value, or neither")
+
+    sql = f"SELECT * FROM {fq}{where} LIMIT {c['max_rows']}"
 
     try:
         conn = _connect_db()
@@ -140,3 +265,116 @@ def export_csv(table: str, _: Annotated[str, Depends(get_api_key)]):
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# /query — constrained ad-hoc SELECT for the dashboard chatbot.
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_SQL = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|replace|truncate|merge|grant|revoke|copy|call|use|set|load|msck|analyze|optimize|vacuum|refresh)\b",
+    re.IGNORECASE,
+)
+
+
+class QueryRequest(BaseModel):
+    sql: str = Field(..., min_length=1, max_length=20_000)
+    limit: int | None = Field(default=1000, ge=1, le=100_000)
+
+
+def _validate_select_sql(sql: str, allowed: frozenset[str], catalog: str, schema: str) -> str:
+    """Return a sanitized SELECT/WITH statement (without trailing ';') or raise."""
+    s = sql.strip()
+    while s.endswith(";"):
+        s = s[:-1].strip()
+    if not s:
+        raise HTTPException(400, "SQL is empty")
+    if ";" in s:
+        raise HTTPException(400, "Only a single SQL statement is allowed")
+    if not re.match(r"^\s*(select|with)\b", s, re.IGNORECASE):
+        raise HTTPException(400, "Only SELECT or WITH statements are allowed")
+    if _FORBIDDEN_SQL.search(s):
+        raise HTTPException(400, "Forbidden SQL keyword detected")
+
+    try:
+        import sqlglot
+        from sqlglot import exp as sqlglot_exp
+    except Exception as e:
+        raise HTTPException(500, f"Server missing SQL parser: {e!s}") from e
+
+    try:
+        tree = sqlglot.parse_one(s, read="databricks")
+    except Exception as e:
+        raise HTTPException(400, f"SQL parse failed: {e!s}") from e
+
+    if tree is None:
+        raise HTTPException(400, "SQL parse returned no tree")
+
+    cte_names: set[str] = set()
+    for cte in tree.find_all(sqlglot_exp.CTE):
+        try:
+            cte_names.add(cte.alias_or_name)
+        except Exception:
+            pass
+
+    for t in tree.find_all(sqlglot_exp.Table):
+        name = t.name
+        db = t.args.get("db")
+        cat = t.args.get("catalog")
+        db_name = db.name if db is not None else None
+        cat_name = cat.name if cat is not None else None
+
+        if name in cte_names and db_name is None and cat_name is None:
+            continue
+
+        if cat_name is not None and cat_name != catalog:
+            raise HTTPException(403, f"Catalog '{cat_name}' is not allowed")
+        if db_name is not None and db_name != schema:
+            raise HTTPException(403, f"Schema '{db_name}' is not allowed")
+        if name not in allowed:
+            raise HTTPException(403, f"Table '{name}' is not allowed for this API key")
+
+    return s
+
+
+@app.post("/query")
+def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
+    """
+    Run a constrained SELECT against the allowlisted gold tables.
+
+    Intended for the dashboard chatbot. Server enforces:
+      - SELECT / WITH only
+      - single statement
+      - references must be to allowlisted tables (or CTE names)
+      - hard row cap (wrapped in an outer LIMIT)
+    """
+    c = _cfg()
+    safe = _validate_select_sql(req.sql, c["allowed"], c["catalog"], c["schema"])
+
+    requested = int(req.limit or 1000)
+    limit = min(requested, c["max_rows"])
+    wrapped_sql = f"SELECT * FROM ({safe}) AS __gems_q LIMIT {limit}"
+
+    try:
+        conn = _connect_db()
+        cur = conn.cursor()
+        try:
+            cur.execute(wrapped_sql)
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description] if cur.description else []
+        finally:
+            cur.close()
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Databricks query failed: {e!s}") from e
+
+    data = [dict(zip(columns, [_json_safe(v) for v in r], strict=False)) for r in rows]
+    return {
+        "columns": columns,
+        "rows": data,
+        "row_count": len(data),
+        "limit_applied": limit,
+        "truncated": len(data) >= limit,
+    }
