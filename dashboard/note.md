@@ -304,6 +304,8 @@ This project ended with a two-layer access design:
 
 - Enforced at App Service edge (before Python code).
 - If not signed in, user is redirected to Microsoft login.
+- Entra authenticates the user and issues a token.
+- Easy Auth validates that token and passes trusted identity headers to Streamlit.
 
 Current decisions:
 
