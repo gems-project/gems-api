@@ -123,8 +123,9 @@ Result: stable logos + mission appearance in production.
 
 Decision made:
 
-- Keep app sign-in broadly accessible to valid tenant/guest identities under current Easy Auth setup.
-- Restrict data pages in-app via allowlist.
+- Keep **App Service Authentication (Easy Auth)** enabled at the Azure edge so Streamlit does not implement OAuth/OIDC itself.
+- Use **Auth0** as the **OpenID Connect identity provider** behind Easy Auth (social logins such as Google/GitHub/Apple are configured in Auth0).
+- Restrict data pages in-app via allowlist (`ALLOWED_USERS` / `ALLOWED_DOMAINS`).
 
 Implementation:
 
@@ -135,6 +136,8 @@ Implementation:
 - Home page remains visible; data pages (Explore/Modeling/Chat/Download) enforce authorization.
 
 This matches the requirement: users may enter app shell, but only allowlisted users access data features.
+
+Historical note (superseded): an earlier iteration used the built-in **Microsoft Entra ID** Easy Auth provider for Cornell tenant sign-in. The current production model uses **Auth0 OIDC + Easy Auth** so collaborators can authenticate with common social providers without changing Cornell central Entra settings.
 
 ## Major Issues and What Worked
 
@@ -166,9 +169,9 @@ This matches the requirement: users may enter app shell, but only allowlisted us
 
 ### Access model
 
-- Easy Auth handles sign-in.
-- `Assignment required = No` means sign-in is not restricted by Enterprise App assignments.
-- In-app gate controls data access (`ALLOWED_USERS` / `ALLOWED_DOMAINS`).
+- **Easy Auth** handles the web-app authentication edge (redirects, session cookies, logout endpoint `/.auth/logout`).
+- **Auth0** is the OIDC identity provider configured inside Easy Auth (social logins live in Auth0).
+- **In-app gate** controls data access (`ALLOWED_USERS` / `ALLOWED_DOMAINS`) after Easy Auth has established identity headers for Streamlit.
 
 ### Deployment model
 
@@ -259,8 +262,7 @@ enforced.
 
 - **Resource type:** Azure App Service (Linux Web App)
 - **Purpose:** Host and run the Streamlit dashboard runtime (`app.py` + pages).
-- **Why this resource:** Provides managed Python runtime, Entra integration
-  (Easy Auth), app settings, deployment slots/logs, and URL hosting.
+- **Why this resource:** Provides managed Python runtime, **App Service Authentication (Easy Auth)** integration, app settings, deployment slots/logs, and URL hosting.
 
 Key configuration choices used:
 
@@ -284,12 +286,13 @@ How it is used by the app:
 - `dashboard/gems_watermarks.py` reads/writes watermark records by user/table.
 - `dashboard/page_download.py` offers full vs incremental export behavior.
 
-#### 3) Microsoft Entra app objects (created by Authentication setup)
+#### 3) Auth0 application + Easy Auth identity provider wiring
 
-Enabling App Service Authentication with Microsoft creates/uses:
+With **Auth0 as the OIDC provider** behind Easy Auth, the important objects are:
 
-- **App Registration** (application definition),
-- **Enterprise Application** (service principal instance in tenant).
+- **Auth0 Tenant** (lab tenant): owns user directories/connections and the Auth0 Application used by Azure.
+- **Auth0 Application (Regular Web)**: holds callback/logout URL allowlists and client credentials used by Azure’s OIDC provider configuration.
+- **Azure App Service Authentication provider entry** (custom OpenID Connect): stores metadata URL, client ID, and a reference to the client secret in app settings.
 
 Purpose:
 
@@ -300,23 +303,23 @@ Purpose:
 
 This project ended with a two-layer access design:
 
-#### Layer 1: Sign-in authentication (Azure Easy Auth / Entra)
+#### Layer 1: Sign-in authentication (Azure Easy Auth + Auth0 OIDC)
 
 - Enforced at App Service edge (before Python code).
-- If not signed in, user is redirected to Microsoft login.
-- Entra authenticates the user and issues a token.
-- Easy Auth validates that token and passes trusted identity headers to Streamlit.
+- If not signed in, Easy Auth redirects the browser to **Auth0** (not Cornell central Entra).
+- Auth0 completes social/provider login and returns through Easy Auth’s callback route.
+- Easy Auth establishes the **App Service session** (browser cookies) and passes trusted identity headers to Streamlit.
 
-Current decisions:
+Operational notes:
 
-- App registration supported account type: **My organization only** (single tenant).
-- Enterprise application `Assignment required`: **No**.
-
-Meaning:
-
-- Cornell tenant users can sign in.
-- Invited guest users in Cornell tenant can sign in.
-- No pre-assignment required for sign-in itself.
+- Use the Web App **Default domain** everywhere (Azure may assign a non-obvious hostname). Mismatched hostnames break DNS and break Auth0 callback/logout URL allowlists.
+- In Authentication settings, set **Redirect to** the Auth0 custom provider (not Microsoft) if Microsoft is still registered but unused.
+- Auth0 **Allowed Callback URLs** must include:
+  - `https://<default-domain>/.auth/login/<provider-name>/callback`
+- Auth0 **Allowed Logout URLs** should include the dashboard origin and common Easy Auth logout completion paths (comma-separated, each URL intact on one line), for example:
+  - `https://<default-domain>/`
+  - `https://<default-domain>/.auth/logout`
+  - `https://<default-domain>/.auth/logout/complete`
 
 #### Layer 2: In-app data authorization (dashboard code)
 
@@ -348,27 +351,24 @@ Policy:
 
 1. Open `gems-dashboard` (Web App resource).
 2. Settings -> Authentication.
-3. Add identity provider -> Microsoft.
-4. Require authentication (redirect unauthenticated users to Microsoft login).
+3. Turn **App Service authentication** to **Enabled**.
+4. Set **Restrict access** / unauthenticated behavior to **Require authentication** (302 redirect is typical for websites).
+5. Add identity provider -> **OpenID Connect** (Auth0).
+6. Set **Redirect to** the Auth0 provider (custom OIDC), not Microsoft, if both providers exist.
+7. Remove/disable the **Microsoft** provider once Auth0 is verified, to avoid accidental Microsoft-first redirects.
 
 Outcome:
 
-- App Registration + Enterprise Application objects are available in Entra.
+- Users authenticate via **Auth0**; Easy Auth injects identity headers for Streamlit.
 
-#### Step 3: Confirm Enterprise App policy
-
-1. Microsoft Entra ID -> Enterprise applications -> `gems-dashboard`.
-2. Properties -> `Assignment required?`
-3. Set to **No** for current model (sign-in open to valid tenant/guest users).
-
-#### Step 4: Create storage table for incremental downloads
+#### Step 3: Create storage table for incremental downloads
 
 1. Create Storage Account (if needed).
 2. Storage account -> Data storage -> Tables -> + Table.
 3. Create table `gemsDownloadWatermarks`.
 4. Copy storage connection string (Access keys) for app settings.
 
-#### Step 5: Set Web App environment variables
+#### Step 4: Set Web App environment variables
 
 Web App -> Settings -> Environment variables -> App settings:
 
@@ -418,7 +418,7 @@ What this script does:
 ### E) Verification checklist after deployment
 
 1. Open default URL for `gems-dashboard`.
-2. Confirm Microsoft sign-in redirect occurs.
+2. Confirm **Auth0** sign-in redirect occurs (social buttons as configured in Auth0).
 3. Confirm Home page renders correctly (hero/logos, no raw HTML).
 4. Confirm data page authorization behavior:
    - allowlisted user: data pages open.
@@ -426,39 +426,28 @@ What this script does:
 5. Confirm Databricks connection loads table lists.
 6. Confirm incremental download mode works when watermark settings are present.
 
-### F) Guest user onboarding procedure (current model)
+### F) Collaborator onboarding procedure (current model)
 
-If user is external to Cornell tenant:
+Because sign-in is handled by **Auth0**, onboarding is primarily:
 
-1. Microsoft Entra ID -> Users -> New user -> Invite external user.
-2. User accepts invitation email.
-3. Add their sign-in identity to `ALLOWED_USERS` in Web App app settings.
-4. Ask user to sign in and verify data-page access.
+1. Enable the desired connection(s) in Auth0 (Google/GitHub/Apple/etc.) for the dashboard Auth0 Application.
+2. Ask the collaborator to sign in once and confirm which **email** Auth0 presents to the app (this should match what appears in the dashboard sidebar).
+3. Add that email to `ALLOWED_USERS` (or add their domain to `ALLOWED_DOMAINS` if appropriate) in Web App app settings.
+4. Ask the collaborator to refresh and verify data-page access.
 
 Note:
 
-- Large guest list in tenant-wide Users view is normal and not app-specific.
-- Enterprise app Users/Groups list is assignment metadata; with
-  `Assignment required = No`, it is not the primary data-access control.
+- Cornell central Entra directory changes are **not required** for this model.
+- If you need stricter “only these people may even reach the app shell”, that is an additional Auth0/Easy Auth policy beyond the current allowlist approach.
 
-### G) Future hardening note: switching to "specific identities"
+### G) Future hardening note: tightening who may authenticate
 
-If we later switch Web App Authentication -> Microsoft provider ->
-`Identity requirement` from "Allow requests from any identity" to
-"Allow requests from specific identities", use this safe rollout:
+If the project later needs to restrict authentication itself (not just data pages), options include:
 
-1. First have target users sign in at least once while permissive mode is active
-   (or otherwise confirm their Entra identity objects exist).
-2. Add those exact identities to the specific-identities list.
-3. Keep at least one break-glass admin account in the list.
-4. Then switch to specific identities and test with one internal + one guest user.
+- Auth0 **Rules/Actions** or organization policies to block unknown emails/domains before issuing tokens.
+- Easy Auth additional restrictions (depending on provider capabilities and operational needs).
 
-Important:
-
-- This mode depends on valid Entra identity objects/tokens, not on invitation
-  email delivery itself.
-- If invitation emails are delayed/filtered, existing confirmed identity objects
-  can still be allowlisted directly.
+Rollout guidance remains the same: tighten gradually, keep a break-glass admin path, and test with one internal + one external collaborator before broad changes.
 
 ## Practical Runbooks
 
@@ -496,6 +485,16 @@ Apply to restart app.
 - In OneDrive-backed repos, Git housekeeping warnings may be noisy but non-fatal; verify commit state explicitly.
 
 ## Change Log (date-by-date)
+
+### 2026-04-27
+
+- **Authentication model updated (Auth0 + Easy Auth)**
+  - Replaced the operational documentation sections that assumed **Microsoft Entra ID** as the Easy Auth provider with the current model: **Azure App Service Authentication (Easy Auth) + Auth0 OpenID Connect**.
+  - Documented practical setup notes: use the Web App **Default domain** for Auth0 callback/logout allowlists, set Easy Auth **Redirect to** Auth0 when multiple providers exist, and validate logout URLs as comma-separated single-line entries in Auth0.
+  - Updated collaborator onboarding to match Auth0-based identities (no Cornell tenant guest-invite dependency for basic access).
+
+- **Home-only sign-out affordance**
+  - Added a Home page sidebar **Sign out** link to `/.auth/logout` in `dashboard/app.py` (Easy Auth logout entrypoint).
 
 ### 2026-04-22
 

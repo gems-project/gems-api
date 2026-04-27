@@ -153,6 +153,12 @@ def _hero_html() -> str:
 def _render_home() -> None:
     user = get_current_user()
     sidebar_user(user)
+    st.sidebar.markdown(
+        '<a href="/.auth/logout" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
+        "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
+        'text-decoration:none;font-weight:600;">Sign out</a>',
+        unsafe_allow_html=True,
+    )
     authorized = is_authorized(user)
     if authorized:
         st.sidebar.caption(
