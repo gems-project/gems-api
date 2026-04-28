@@ -3,11 +3,14 @@ GEMS read-only CSV API: API-key auth + allowlisted gold tables via Databricks SQ
 """
 
 import csv
+import hashlib
+import hmac
 import io
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -18,13 +21,15 @@ from pydantic import BaseModel, Field
 # Local: API/.env. Azure: use Application settings (env vars); .env optional if present.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-app = FastAPI(title="GEMS Gold Export API", version="0.3.0")
+app = FastAPI(title="GEMS Gold Export API", version="0.4.0")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _IDENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 # Allow digits, T, Z, space, dash, colon, dot, plus (ISO-8601 timestamps or plain ints/decimals).
 _SINCE_VALUE_RE = re.compile(r"^[0-9A-Za-z\-:.+ ]{1,64}$")
+_API_KEY_PREFIX = "gems_live_"
+_API_KEY_PARTITION = "api_key"
 
 
 def _cfg() -> dict:
@@ -37,9 +42,13 @@ def _cfg() -> dict:
         "token": os.getenv("DATABRICKS_TOKEN", "").strip(),
         "catalog": os.getenv("GEMS_CATALOG", "gems_catalog").strip(),
         "schema": os.getenv("GEMS_SCHEMA", "gold_v1").strip(),
-        "api_key": os.getenv("GEMS_API_KEY", "").strip(),
         "allowed": _parse_allowed_tables(os.getenv("ALLOWED_TABLES", "")),
         "max_rows": int(os.getenv("MAX_EXPORT_ROWS", "100000")),
+        "tables_conn": os.getenv("AZURE_TABLES_CONNECTION_STRING", "").strip(),
+        "api_keys_table": os.getenv("AZURE_API_KEYS_TABLE", "gemsApiKeys").strip(),
+        "api_key_pepper": os.getenv("API_KEY_PEPPER", "").strip(),
+        "allowed_users": _parse_allowed_users(os.getenv("ALLOWED_USERS", "")),
+        "allowed_domains": _parse_allowed_users(os.getenv("ALLOWED_DOMAINS", "")),
     }
 
 
@@ -48,13 +57,78 @@ def _parse_allowed_tables(raw: str) -> frozenset[str]:
     return frozenset(parts)
 
 
-def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> str:
-    expected = _cfg()["api_key"]
-    if not expected:
-        raise HTTPException(500, "Server misconfigured: GEMS_API_KEY not set")
-    if not x_api_key or x_api_key != expected:
+def _parse_allowed_users(raw: str) -> frozenset[str]:
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return frozenset(parts)
+
+
+def _owner_is_authorized(owner: str) -> bool:
+    c = _cfg()
+    allowed_users = c["allowed_users"]
+    allowed_domains = c["allowed_domains"]
+    if not allowed_users and not allowed_domains:
+        return True
+    normalized = (owner or "").strip().lower()
+    if normalized in allowed_users:
+        return True
+    domain = normalized.rsplit("@", 1)[-1] if "@" in normalized else ""
+    return bool(domain) and domain in allowed_domains
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _hash_api_key(raw_key: str, pepper: str) -> str:
+    return hmac.new(
+        pepper.encode("utf-8"),
+        raw_key.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _api_key_table_client():
+    c = _cfg()
+    if not c["tables_conn"] or not c["api_key_pepper"] or not c["api_keys_table"]:
+        raise HTTPException(500, "Server misconfigured: API key storage not configured")
+    try:
+        from azure.data.tables import TableServiceClient
+
+        svc = TableServiceClient.from_connection_string(c["tables_conn"])
+        return svc.get_table_client(c["api_keys_table"])
+    except Exception as e:
+        raise HTTPException(500, f"Server misconfigured: API key table unavailable: {e!s}") from e
+
+
+def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> dict:
+    c = _cfg()
+    if not x_api_key or not x_api_key.startswith(_API_KEY_PREFIX):
         raise HTTPException(401, "Invalid or missing API key (use header X-API-Key)")
-    return x_api_key
+    key_hash = _hash_api_key(x_api_key, c["api_key_pepper"])
+    client = _api_key_table_client()
+    try:
+        entity = client.get_entity(_API_KEY_PARTITION, key_hash)
+    except Exception:
+        raise HTTPException(401, "Invalid or missing API key (use header X-API-Key)")
+
+    if str(entity.get("revokedAt", "") or ""):
+        raise HTTPException(401, "API key has been revoked")
+
+    owner = str(entity.get("owner", ""))
+    if not _owner_is_authorized(owner):
+        raise HTTPException(403, "API key owner is no longer authorized")
+
+    try:
+        entity["lastUsedAt"] = _utc_now()
+        client.upsert_entity(entity)
+    except Exception:
+        pass
+
+    return {
+        "owner": owner,
+        "name": str(entity.get("name", "")),
+        "key_hash": key_hash,
+    }
 
 
 def _validate_table_name(table: str) -> str:
@@ -143,7 +217,15 @@ def _format_since_literal(value: str, col_type: str) -> str:
 @app.get("/health")
 def health():
     c = _cfg()
-    ok = bool(c["host"] and c["http_path"] and c["token"] and c["api_key"] and c["allowed"])
+    ok = bool(
+        c["host"]
+        and c["http_path"]
+        and c["token"]
+        and c["allowed"]
+        and c["tables_conn"]
+        and c["api_keys_table"]
+        and c["api_key_pepper"]
+    )
     return {"status": "ok" if ok else "degraded", "allowed_table_count": len(c["allowed"])}
 
 
@@ -151,6 +233,50 @@ def health():
 def list_tables(_: Annotated[str, Depends(get_api_key)]):
     """Tables this API key may export (allowlist)."""
     return {"tables": sorted(_cfg()["allowed"])}
+
+
+def _table_version(table: str) -> dict:
+    t = _validate_table_name(table)
+    c = _cfg()
+    fq = f"{c['catalog']}.{c['schema']}.{t}"
+    try:
+        conn = _connect_db()
+        cur = conn.cursor()
+        try:
+            cur.execute(f"DESCRIBE HISTORY {fq} LIMIT 1")
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description] if cur.description else []
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Databricks table history lookup failed: {e!s}") from e
+
+    if not rows:
+        raise HTTPException(404, f"No Delta history found for table '{t}'")
+
+    row = dict(zip(columns, rows[0], strict=False))
+    return {
+        "table": t,
+        "catalog": c["catalog"],
+        "schema": c["schema"],
+        "version": _json_safe(row.get("version")),
+        "timestamp": _json_safe(row.get("timestamp")),
+        "operation": _json_safe(row.get("operation")),
+    }
+
+
+@app.get("/version/{table}")
+def get_version(table: str, _: Annotated[dict, Depends(get_api_key)]):
+    """Return the latest Delta table version for one allowlisted gold table."""
+    return _table_version(table)
+
+
+@app.get("/versions")
+def get_versions(_: Annotated[dict, Depends(get_api_key)]):
+    """Return latest Delta table versions for all allowlisted gold tables."""
+    versions = [_table_version(table) for table in sorted(_cfg()["allowed"])]
+    return {"tables": versions}
 
 
 @app.get("/schema/{table}")

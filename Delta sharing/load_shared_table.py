@@ -117,7 +117,6 @@ def _safe_stem(t) -> str:
 # Drop lineage / ingest metadata (match case-insensitive, ignore spaces/underscores in names).
 _DROP_COL_NORMS = frozenset(
     {
-        "sequence",
         "workbookfile",
         "workbookpath",
         "gaterunid",  # gateRunId / ingestRunId

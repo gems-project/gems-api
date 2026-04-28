@@ -1,9 +1,9 @@
 """Read the signed-in user from Azure App Service Easy Auth headers and enforce
 an in-app allowlist.
 
-Easy Auth injects ``X-MS-CLIENT-PRINCIPAL-NAME`` (the UPN, usually an email) on
-every request after a successful Entra ID sign-in. When running locally we fall
-back to ``LOCAL_DEV_USER`` so pages don't blow up during development.
+Easy Auth injects ``X-MS-CLIENT-PRINCIPAL-NAME`` (usually an email) on every
+request after a successful Auth0/OIDC sign-in. When running locally we fall back
+to ``LOCAL_DEV_USER`` so pages don't blow up during development.
 
 Access control is driven by two environment variables (either or both may be
 set; the check passes if the user matches **any** of them):
@@ -83,7 +83,7 @@ def require_authorized_user() -> str:
     st.error("You are not authorized to access the data on this page.")
     st.write(
         f"Signed in as **{user}**. The public landing page is open to anyone, "
-        "but the Explore, Modeling, Chat, and Download pages are restricted. "
+        "but the Explore, Modeling, Chat, and API Access pages are restricted. "
         "Ask the dashboard administrator to add your email or domain to the "
         "allowlist if you need data access."
     )

@@ -14,7 +14,7 @@ The dashboard was built as a standalone Streamlit app for:
 - plotting and interpreting data,
 - fitting statistical models,
 - chatting over data with guardrailed SQL,
-- downloading full or incremental CSVs.
+- managing API keys for programmatic data access.
 
 Design requirement: dashboard should not depend on the API web app runtime. It connects directly to Databricks SQL.
 
@@ -133,7 +133,7 @@ Implementation:
   - `ALLOWED_USERS` (exact UPN/email list),
   - `ALLOWED_DOMAINS` (domain list),
   - `require_authorized_user()` gate.
-- Home page remains visible; data pages (Explore/Modeling/Chat/Download) enforce authorization.
+- Home page remains visible; data pages (Explore/Modeling/Chat/API Access) enforce authorization.
 
 This matches the requirement: users may enter app shell, but only allowlisted users access data features.
 
@@ -201,8 +201,11 @@ Historical note (superseded): an earlier iteration used the built-in **Microsoft
 - `page_chat.py`  
   Chat interface over data using guarded SQL execution path.
 
-- `page_download.py`  
-  Full/incremental CSV download UI and watermark-aware export flow.
+- `page_api_access.py`  
+  API-key management UI plus Python/R examples for version-aware table refresh.
+
+- `gems_api_keys.py`  
+  API-key generation, HMAC hashing, Azure Table Storage persistence, listing, and revocation.
 
 - `gems_data.py`  
   Databricks SQL connectivity and data-access helpers (schemas, previews, exports, allowlist-aware queries).
@@ -221,9 +224,6 @@ Historical note (superseded): an earlier iteration used the built-in **Microsoft
 
 - `gems_ui.py`  
   Shared Streamlit styling/theme/render helpers and sidebar user display helpers.
-
-- `gems_watermarks.py`  
-  Azure Table Storage watermark persistence for incremental download.
 
 - `gems_logo_data.py`  
   Embedded base64 logo payloads used for stable rendering in production.
@@ -272,19 +272,18 @@ Key configuration choices used:
 - App name: `gems-dashboard`
 - Resource group: `GEMS`
 
-#### 2) Storage account + Table: `gemsDownloadWatermarks`
+#### 2) Storage account + Table: `gemsApiKeys`
 
 - **Resource type:** Azure Storage Account (Table service)
-- **Table name:** `gemsDownloadWatermarks`
-- **Purpose:** Persist per-user watermark checkpoints for incremental CSV
-  downloads.
-- **Why this resource:** Lets Download page return only rows newer than a
-  user's last export position, instead of forcing full table download each time.
+- **Table name:** `gemsApiKeys`
+- **Purpose:** Persist hashed per-user API keys generated from the dashboard.
+- **Why this resource:** Lets `gems-dashboard` generate/revoke personal API keys
+  while `GEMS-API` validates those keys without storing raw secrets.
 
 How it is used by the app:
 
-- `dashboard/gems_watermarks.py` reads/writes watermark records by user/table.
-- `dashboard/page_download.py` offers full vs incremental export behavior.
+- `dashboard/gems_api_keys.py` writes hashed key records by signed-in user.
+- `API/main.py` hashes incoming `X-API-Key` values and looks up matching active records.
 
 #### 3) Auth0 application + Easy Auth identity provider wiring
 
@@ -298,6 +297,28 @@ Purpose:
 
 - Handle sign-in (Easy Auth) before requests hit Streamlit.
 - Expose identity headers to app (`X-MS-CLIENT-PRINCIPAL-NAME`).
+
+Auth0 setup details:
+
+1. Open the lab Auth0 tenant (for example, the existing `dev-...` tenant under the lab/team Auth0 account).
+2. Create or reuse an Auth0 **Application** for the dashboard.
+3. Application type should be **Regular Web Application**.
+4. Record the Auth0 **Domain**, **Client ID**, and **Client Secret**. Do not commit the client secret to Git.
+5. In the Auth0 Application settings, add the dashboard App Service default domain to:
+   - **Allowed Callback URLs**: `https://<default-domain>/.auth/login/auth0/callback`
+   - **Allowed Logout URLs**: `https://<default-domain>/`, `https://<default-domain>/.auth/logout`, `https://<default-domain>/.auth/logout/complete`
+   - **Allowed Web Origins**: `https://<default-domain>`
+6. Enable desired social connections in Auth0 (`Authentication -> Social`) and ensure those connections are enabled for the dashboard Application.
+
+Azure Easy Auth configuration values for the `gems-dashboard` App Service:
+
+- Provider type: **OpenID Connect**
+- Provider name: `auth0`
+- Metadata URL: `https://<auth0-domain>/.well-known/openid-configuration`
+- Issuer URL: `https://<auth0-domain>/`
+- Scopes: `openid profile email`
+- Client ID: Auth0 dashboard Application client ID
+- Client secret: Auth0 dashboard Application client secret
 
 ### B) Authentication and Authorization model (final state)
 
@@ -325,7 +346,7 @@ Operational notes:
 
 - Enforced inside dashboard pages through `require_authorized_user()`.
 - Home page remains visible to signed-in users.
-- Data pages (Explore/Modeling/Chat/Download) require allowlist match.
+- Data pages (Explore/Modeling/Chat/API Access) require allowlist match.
 
 Control variables:
 
@@ -354,19 +375,36 @@ Policy:
 3. Turn **App Service authentication** to **Enabled**.
 4. Set **Restrict access** / unauthenticated behavior to **Require authentication** (302 redirect is typical for websites).
 5. Add identity provider -> **OpenID Connect** (Auth0).
-6. Set **Redirect to** the Auth0 provider (custom OIDC), not Microsoft, if both providers exist.
-7. Remove/disable the **Microsoft** provider once Auth0 is verified, to avoid accidental Microsoft-first redirects.
+6. Use provider name `auth0` so the Easy Auth callback path is predictable: `/.auth/login/auth0/callback`.
+7. Enter the Auth0 Application values:
+   - Metadata URL: `https://<auth0-domain>/.well-known/openid-configuration`
+   - Issuer URL: `https://<auth0-domain>/`
+   - Client ID: Auth0 Application client ID
+   - Client secret: Auth0 Application client secret
+   - Scopes: `openid profile email`
+8. Set **Redirect to** the Auth0 provider (custom OIDC), not Microsoft, if both providers exist.
+9. Test sign-in in a private/incognito browser.
+10. Remove/disable the **Microsoft** provider once Auth0 is verified, to avoid accidental Microsoft-first redirects.
+11. Test logout through `https://<default-domain>/.auth/logout`.
 
 Outcome:
 
 - Users authenticate via **Auth0**; Easy Auth injects identity headers for Streamlit.
 
-#### Step 3: Create storage table for incremental downloads
+#### Step 3: Create API key storage table
 
 1. Create Storage Account (if needed).
 2. Storage account -> Data storage -> Tables -> + Table.
-3. Create table `gemsDownloadWatermarks`.
+3. Create table `gemsApiKeys`.
 4. Copy storage connection string (Access keys) for app settings.
+5. Create one long random `API_KEY_PEPPER` value and set the same value in both the dashboard App Service and the API App Service.
+
+How it is used:
+
+- `dashboard/page_api_access.py` lets allowlisted users generate/revoke personal API keys.
+- `dashboard/gems_api_keys.py` stores only HMAC-SHA256 key hashes in Azure Table Storage.
+- `API/main.py` validates incoming `X-API-Key` values by hashing them with the same pepper and looking up the hash in `gemsApiKeys`.
+- Raw API keys are shown once and are never stored.
 
 #### Step 4: Set Web App environment variables
 
@@ -383,9 +421,11 @@ Web App -> Settings -> Environment variables -> App settings:
   - `OPENAI_API_KEY`
   - `OPENAI_MODEL`
   - `OPENAI_CHAT_MODEL`
-- Watermarks:
+- API access:
   - `AZURE_TABLES_CONNECTION_STRING`
-  - `AZURE_TABLES_NAME=gemsDownloadWatermarks`
+  - `AZURE_API_KEYS_TABLE=gemsApiKeys`
+  - `API_KEY_PEPPER`
+  - `GEMS_API_BASE_URL`
 - App-level authorization:
   - `ALLOWED_USERS` (comma-separated)
   - optional `ALLOWED_DOMAINS`
@@ -424,7 +464,9 @@ What this script does:
    - allowlisted user: data pages open.
    - non-allowlisted signed-in user: blocked on data pages with clear message.
 5. Confirm Databricks connection loads table lists.
-6. Confirm incremental download mode works when watermark settings are present.
+6. Confirm API Access is blocked for non-allowlisted users.
+7. Confirm allowlisted users can create and revoke API keys.
+8. Confirm a generated key works against the API `/tables`, `/version/{table}`, and `/export/{table}.csv` endpoints.
 
 ### F) Collaborator onboarding procedure (current model)
 
@@ -488,9 +530,17 @@ Apply to restart app.
 
 ### 2026-04-27
 
+- **API Access replaces Download page**
+  - Removed the dashboard Download page from navigation and added `dashboard/page_api_access.py`.
+  - Added `dashboard/gems_api_keys.py` for per-user API-key generation, hashing, listing, and revocation through Azure Table Storage.
+  - Documented the shared `gemsApiKeys` table model used by both `gems-dashboard` and `GEMS-API`.
+  - API Access now includes user-friendly Python/R examples for all-table version-aware refresh: check table version first, download only when changed, and overwrite local CSV files.
+  - FastAPI now validates per-user table-backed `X-API-Key` values and exposes `/version/{table}` and `/versions`.
+
 - **Authentication model updated (Auth0 + Easy Auth)**
   - Replaced the operational documentation sections that assumed **Microsoft Entra ID** as the Easy Auth provider with the current model: **Azure App Service Authentication (Easy Auth) + Auth0 OpenID Connect**.
   - Documented practical setup notes: use the Web App **Default domain** for Auth0 callback/logout allowlists, set Easy Auth **Redirect to** Auth0 when multiple providers exist, and validate logout URLs as comma-separated single-line entries in Auth0.
+  - Added concrete setup steps for the Auth0 dashboard Application and the Azure App Service Authentication custom OpenID Connect provider configuration.
   - Updated collaborator onboarding to match Auth0-based identities (no Cornell tenant guest-invite dependency for basic access).
 
 - **Home-only sign-out affordance**
@@ -515,7 +565,7 @@ Apply to restart app.
   - Applied gate to data pages while keeping home page accessible for signed-in users.
   - Added user-facing unauthorized messaging with home/sign-out options.
   - Updated env documentation in `.env.example`.
-  - Files touched (major): `dashboard/gems_auth.py`, `dashboard/app.py`, `dashboard/page_explore.py`, `dashboard/page_modeling.py`, `dashboard/page_chat.py`, `dashboard/page_download.py`, `dashboard/.env.example`.
+  - Files touched (major): `dashboard/gems_auth.py`, `dashboard/app.py`, `dashboard/page_explore.py`, `dashboard/page_modeling.py`, `dashboard/page_chat.py`, `dashboard/.env.example`.
 
 - **Documentation update**
   - Added detailed historical note (`dashboard/note.md`) and concise operational README (`dashboard/README.md`).

@@ -85,11 +85,11 @@ try {
     "gems_ai.py",
     "gems_chat.py",
     "gems_logo_data.py",
-    "gems_watermarks.py",
+    "gems_api_keys.py",
     "page_explore.py",
     "page_modeling.py",
     "page_chat.py",
-    "page_download.py",
+    "page_api_access.py",
     "assets",
     ".streamlit",
     "requirements.txt",
@@ -155,4 +155,4 @@ else {
   Write-Host "Deployed." -ForegroundColor Green
 }
 Write-Host "Open: https://$domain/" -ForegroundColor Green
-Write-Host "You will be redirected to Microsoft sign-in if Authentication is enabled."
+Write-Host "You will be redirected to Auth0 sign-in if Authentication is enabled."

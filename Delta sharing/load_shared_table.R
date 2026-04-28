@@ -176,7 +176,7 @@ find_config_path <- function() {
   }
   norm <- function(x) gsub("[^a-z0-9]", "", tolower(as.character(x)))
   drop_norms <- c(
-    "sequence", "workbookfile", "workbookpath",
+    "workbookfile", "workbookpath",
     "gaterunid", "ingestid", "excelsourcerow"
   )
   nms <- names(df)

@@ -162,7 +162,7 @@ def _render_home() -> None:
     authorized = is_authorized(user)
     if authorized:
         st.sidebar.caption(
-            "Use the links above to explore data, download CSVs, fit models, and chat."
+            "Use the links above to explore data, fit models, chat, and manage API access."
         )
     else:
         st.sidebar.warning(
@@ -315,11 +315,11 @@ def _render_home() -> None:
             _md_html(
                 """
                 <div class="gems-card">
-                  <div class="gems-icon">⬇️</div>
-                  <h4>Download</h4>
-                  <p>Grab a full CSV of any table, or use incremental download to get only the
-                  rows added since your last pull. Watermarks are tracked per user, so repeat
-                  downloads are efficient.</p>
+                  <div class="gems-icon">🔑</div>
+                  <h4>API Access</h4>
+                  <p>Generate personal API keys, query tables from Python or R, and use
+                  version-aware refresh scripts that overwrite local files only when gold
+                  table versions change.</p>
                 </div>
                 """
             ),
@@ -391,7 +391,7 @@ def _render_home() -> None:
     )
     sc4.markdown(
         f'<div class="gems-stat"><div class="v">Secure</div>'
-        f'<div class="l">Azure Entra ID sign-in</div></div>',
+        f'<div class="l">Auth0 sign-in + allowlist</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -412,9 +412,8 @@ def _render_home() -> None:
         )
 
     st.markdown(
-        '<div class="gems-footer">Authentication by Azure App Service (Entra ID). '
-        "If you are signed in with the wrong account, clear your browser's Microsoft "
-        "session and return here.</div>",
+        '<div class="gems-footer">Authentication by Auth0 through Azure App Service '
+        "Authentication. Use Sign out if you are signed in with the wrong account.</div>",
         unsafe_allow_html=True,
     )
 
@@ -425,7 +424,7 @@ pg = st.navigation(
         st.Page("page_explore.py", title="Explore", icon="🔎"),
         st.Page("page_modeling.py", title="Modeling", icon="📈"),
         st.Page("page_chat.py", title="Chat", icon="💬"),
-        st.Page("page_download.py", title="Download", icon="⬇️"),
+        st.Page("page_api_access.py", title="API Access", icon="🔑"),
     ]
 )
 pg.run()

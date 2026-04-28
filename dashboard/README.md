@@ -1,18 +1,18 @@
 # GEMS Dashboard
 
-Streamlit dashboard for GEMS data exploration, modeling, chat, and CSV downloads.
-The app is standalone and connects directly to Databricks SQL (it does not call
-the API web app).
+Streamlit dashboard for GEMS data exploration, modeling, chat, and API access.
+The app connects directly to Databricks SQL for interactive pages and manages
+per-user API keys for the separate FastAPI web app.
 
 For a detailed project history and issue log, see `dashboard/note.md`.
 
 ## Quick Architecture
 
 - **Frontend/runtime:** Streamlit (`app.py` + `page_*.py`)
-- **Auth:** Azure App Service Easy Auth (Microsoft Entra ID)
+- **Auth:** Auth0 through Azure App Service Easy Auth
 - **Data:** Databricks SQL warehouse (`gems_catalog.gold_v1`)
 - **AI:** OpenAI (plot/model interpretation + chat)
-- **Incremental downloads:** Azure Table Storage watermarks
+- **API keys:** Azure Table Storage hashed per-user key records
 
 ## Main Files
 
@@ -20,7 +20,8 @@ For a detailed project history and issue log, see `dashboard/note.md`.
 - `page_explore.py`: data browsing, joins, charts, chart interpretation.
 - `page_modeling.py`: OLS/MixedLM workflows and interpretation.
 - `page_chat.py`: chat over data with SQL safety checks.
-- `page_download.py`: full/incremental CSV export.
+- `page_api_access.py`: API-key creation/revocation and Python/R examples.
+- `gems_api_keys.py`: API-key generation, hashing, and Azure Table Storage records.
 - `gems_data.py`: Databricks query/access layer.
 - `gems_auth.py`: user identity + allowlist gate.
 - `gems_logo_data.py`: embedded logo bytes for stable rendering in Azure.
@@ -51,12 +52,12 @@ Open `http://localhost:8501`.
 ## Azure Setup (One-Time)
 
 1. Create Linux App Service Web App (`gems-dashboard`).
-2. Enable Authentication with Microsoft (Easy Auth).
+2. Enable Authentication with Auth0 as an OpenID Connect provider through Easy Auth.
 3. Configure App Settings (Environment variables):
    - Databricks: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`
    - Dataset scope: `GEMS_CATALOG`, `GEMS_SCHEMA`, `ALLOWED_TABLES`
    - AI: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_CHAT_MODEL`
-   - Downloads: `AZURE_TABLES_CONNECTION_STRING`, `AZURE_TABLES_NAME`
+   - API access: `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, `API_KEY_PEPPER`, `GEMS_API_BASE_URL`
    - Data access gate: `ALLOWED_USERS` and/or `ALLOWED_DOMAINS`
 
 ## Access Control Model (Current)
@@ -64,7 +65,7 @@ Open `http://localhost:8501`.
 - Easy Auth controls who can sign in.
 - In-app allowlist controls who can access data pages.
 - Home page remains visible to signed-in users.
-- Explore/Modeling/Chat/Download call `require_authorized_user()`.
+- Explore/Modeling/Chat/API Access call `require_authorized_user()`.
 
 `ALLOWED_USERS` example:
 

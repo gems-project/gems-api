@@ -97,7 +97,7 @@ flowchart TB
   end
 ```
 
-Variable names match in both places: `DATABRICKS_*`, `GEMS_*`, `ALLOWED_TABLES`, `GEMS_API_KEY`, etc.
+Variable names match in both places: `DATABRICKS_*`, `GEMS_*`, `ALLOWED_TABLES`, `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, `API_KEY_PEPPER`, etc.
 
 ---
 
@@ -112,12 +112,12 @@ Roughly, this is the order that worked:
 1. **Portal** — Create a **Linux** Web App, **Python 3.11+**, pick region and plan (e.g. with **Always On** if you need it).
 2. **Subscription** — In **Cloud Shell** or **PowerShell**, run **`az login`**, then **`az account set --subscription <id>`** so deploy commands hit the right tenant (wrong default subscription causes mysterious **Authorization failed** errors).
 3. **Startup** — Set the **Gunicorn** one-liner (**§6**), e.g. with **`az webapp config set ... --startup-file "gunicorn main:app ..."`**. We did **not** rely on **`bash startup.sh`** for that first deploy; the script is optional if you point startup at it.
-4. **Portal** — **Environment variables** → add **`DATABRICKS_*`**, **`GEMS_*`**, **`ALLOWED_TABLES`**, **`GEMS_API_KEY`**, etc., then **Save** (values can match what you keep in **`API/.env`** for your own reference — that file never has to run locally first).
+4. **Portal** — **Environment variables** → add **`DATABRICKS_*`**, **`GEMS_*`**, **`ALLOWED_TABLES`**, **`AZURE_TABLES_CONNECTION_STRING`**, **`AZURE_API_KEYS_TABLE`**, **`API_KEY_PEPPER`**, etc., then **Save**. The storage/pepper values must match the dashboard App Service so keys generated in the dashboard work in the API.
 5. **Cursor / PowerShell** — Build **`gems-api.zip`** from the **`API`** folder (**§8**): `main.py`, `requirements.txt`, `startup.sh`, `.deployment`, `.env.example` at the **root** of the zip, **no** `.env` / `.venv`.
 6. **PowerShell** — **`az webapp deploy`** from the folder that contains the zip (**§8 D.1**), then **Restart** the Web App if needed.
-7. **Browser** — Open **`https://<Default domain>/docs`** from **Overview** (not a different `*.azurewebsites.net` that might be another app). **Authorize** with **`X-API-Key`** = **`GEMS_API_KEY`**, then try **`/tables`** and **`/export/{table}.csv`**.
+7. **Browser** — Generate a personal key in dashboard **API Access**, then open **`https://<Default domain>/docs`** from **Overview**. **Authorize** with **`X-API-Key`**, then try **`/tables`**, **`/version/{table}`**, and **`/export/{table}.csv`**.
 
-After that, collaborators only need the **default domain** and the shared API key.
+After that, collaborators use the dashboard **API Access** page for personal keys, the base URL, and Python/R examples.
 
 ### Diagram (same story, compact)
 
@@ -129,7 +129,7 @@ flowchart TD
   P2 --> ZIP[PowerShell: gems-api.zip from API folder]
   ZIP --> CLI3[az webapp deploy]
   CLI3 --> R[Restart if needed]
-  R --> OK[HTTPS Default domain /docs — key — tables and export]
+  R --> OK[HTTPS Default domain /docs — personal key — tables, versions, and export]
 ```
 
 ### If you want a safer rehearsal first (optional, recommended for new clones)
@@ -143,7 +143,7 @@ Many teams still **copy `.env.example` → `.env`**, run **`uvicorn`** once (**�
 | Optional: local `.env` + **uvicorn** smoke test | **Your PC** — **§5** |
 | Create Web App, plan, region | **Azure Portal** |
 | **`az account set`**, **`az webapp config set`**, **`az webapp deploy`** | **PowerShell** or **Cursor** terminal (**§14**); **Cloud Shell** for subscription fixes |
-| **`DATABRICKS_*`**, **`GEMS_*`**, **`ALLOWED_TABLES`**, **`GEMS_API_KEY`** | **Portal** → **Environment variables** |
+| **`DATABRICKS_*`**, **`GEMS_*`**, **`ALLOWED_TABLES`**, **`AZURE_TABLES_CONNECTION_STRING`**, **`AZURE_API_KEYS_TABLE`**, **`API_KEY_PEPPER`** | **Portal** → **Environment variables** |
 | Build **`gems-api.zip`** | **PowerShell** — **§8** |
 | Upload zip without CLI | **Kudu** **`/ZipDeploy`** or **File Manager** — **§8 D.2** |
 | Confirm the URL you share | **Overview** → **Default domain** |
@@ -177,7 +177,10 @@ Edit **`API/.env`** with real values. **Never commit `.env`.** Do not put secret
 | `DATABRICKS_TOKEN` | PAT |
 | `GEMS_CATALOG` / `GEMS_SCHEMA` | Unity Catalog location of gold tables |
 | `ALLOWED_TABLES` | Comma-separated **table names only** (e.g. `goldanimalcharacteristics,goldbodyweight`) |
-| `GEMS_API_KEY` | Long random string; clients send it as **`X-API-Key`** |
+| `AZURE_TABLES_CONNECTION_STRING` | Storage account connection string shared with the dashboard API-key page |
+| `AZURE_API_KEYS_TABLE` | Table containing hashed per-user API keys, usually `gemsApiKeys` |
+| `API_KEY_PEPPER` | Long random server secret used to hash keys; must match the dashboard value |
+| `ALLOWED_USERS` / `ALLOWED_DOMAINS` | Optional mirror of dashboard data-access allowlist; if set, keys owned by removed users are rejected |
 | `MAX_EXPORT_ROWS` | Optional cap (default `100000` in code if unset) |
 
 Run:
@@ -195,7 +198,8 @@ Smoke tests:
 |--------------|----------|
 | `http://127.0.0.1:8000/docs` | Swagger UI |
 | `GET /health` | `status` ok/degraded + `allowed_table_count` |
-| `GET /tables` with header `X-API-Key: <GEMS_API_KEY>` | JSON list of allowed tables |
+| `GET /tables` with header `X-API-Key: <dashboard-generated key>` | JSON list of allowed tables |
+| `GET /version/<table>` with same header | Latest Delta table version metadata |
 | `GET /export/<table>.csv` with same header | CSV download |
 
 ---
@@ -247,7 +251,10 @@ Enable **Always On** under **Configuration → General settings** if your plan s
 | `DATABRICKS_TOKEN` | PAT |
 | `GEMS_CATALOG` / `GEMS_SCHEMA` | If omitted, defaults in code apply |
 | `ALLOWED_TABLES` | Comma-separated table names |
-| `GEMS_API_KEY` | Shared secret for `X-API-Key` |
+| `AZURE_TABLES_CONNECTION_STRING` | Same storage connection string used by `gems-dashboard` |
+| `AZURE_API_KEYS_TABLE` | Usually `gemsApiKeys` |
+| `API_KEY_PEPPER` | Same long random value used by `gems-dashboard` |
+| `ALLOWED_USERS` / `ALLOWED_DOMAINS` | Optional but recommended: same allowlist as dashboard |
 | `MAX_EXPORT_ROWS` | Optional |
 
 **Deployment slot setting:** leave **unchecked** unless you use staging slots and need different values per slot.
@@ -325,16 +332,19 @@ The **`.deployment`** file enables **`pip install -r requirements.txt`** during 
 
 1. In **Overview**, copy the **Default domain** (e.g. `https://your-app-xxxx.eastus-01.azurewebsites.net`). Use this exact host — a different short name like `something.azurewebsites.net` may be a **different** application entirely.
 2. Open **`https://<default-domain>/docs`**.
-3. Click **Authorize**, enter **`GEMS_API_KEY`** as the **`X-API-Key`** value (not your Microsoft password).
+3. Generate a personal API key from the dashboard **API Access** page.
+4. Click **Authorize**, enter that key as the **`X-API-Key`** value.
 4. Run **`GET /tables`** to list allowlisted names.
-5. Run **`GET /export/{table}.csv`**: set path parameter **`table`** to e.g. `goldanimalcharacteristics` (no `.csv` in the parameter box).
+5. Run **`GET /version/{table}`** to confirm Delta table version metadata.
+6. Run **`GET /export/{table}.csv`**: set path parameter **`table`** to e.g. `goldanimalcharacteristics` (no `.csv` in the parameter box).
 
-**Collaborators** need: base URL, **`GEMS_API_KEY`**, and optionally **`GET /tables`** to discover names. Example PowerShell:
+**Collaborators** should use the dashboard **API Access** page. It shows the base URL, generates personal keys, and provides Python/R all-table refresh examples.
 
 ```powershell
 $base = "https://YOUR-DEFAULT-DOMAIN"
-$key  = "SHARED_GEMS_API_KEY"
+$key  = "gems_live_..."
 Invoke-RestMethod -Uri "$base/tables" -Headers @{ "X-API-Key" = $key }
+Invoke-RestMethod -Uri "$base/version/goldanimalcharacteristics" -Headers @{ "X-API-Key" = $key }
 Invoke-WebRequest -Uri "$base/export/goldanimalcharacteristics.csv" -Headers @{ "X-API-Key" = $key } -OutFile "goldanimalcharacteristics.csv"
 ```
 
@@ -345,7 +355,8 @@ Invoke-WebRequest -Uri "$base/export/goldanimalcharacteristics.csv" -Headers @{ 
 | Task | Where |
 |------|--------|
 | Add/remove **allowlisted tables** | Azure **Environment variables** → edit **`ALLOWED_TABLES`** → Save. No redeploy. |
-| Rotate **`GEMS_API_KEY`** | Same; update Swagger **Authorize** and all scripts. |
+| Revoke a user API key | Dashboard **API Access** page. |
+| Rotate all API keys | Change `API_KEY_PEPPER` in both apps, then have users generate new keys. |
 | Change **Databricks PAT** | Edit **`DATABRICKS_TOKEN`** in Azure. |
 | **Code** changes | Rebuild zip, redeploy (**§8** D.1 CLI, D.2 Portal/Kudu, or D.3 extension). |
 | Document table list for git (no secrets) | Edit **`API/.env.example`** in Cursor and commit. |
@@ -357,7 +368,7 @@ Invoke-WebRequest -Uri "$base/export/goldanimalcharacteristics.csv" -Headers @{ 
 | Symptom | Likely cause | What to do |
 |---------|----------------|------------|
 | **`startup.sh: set: -: invalid option`** or bash parse errors | **`startup.sh` saved with CRLF** | Use LF endings, or switch startup to the **Gunicorn one-liner** (§6). |
-| **`401` on `/tables` or `/export`** | Wrong or missing **`X-API-Key`** | Must match **`GEMS_API_KEY`** in Azure (or local `.env`). |
+| **`401` on `/tables` or `/export`** | Wrong, missing, or revoked **`X-API-Key`** | Generate a fresh key in dashboard API Access; confirm API and dashboard share `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, and `API_KEY_PEPPER`. |
 | **`403` Table not allowed** | Table not in **`ALLOWED_TABLES`** | Add name in Azure App settings (comma-separated). |
 | **`502` Databricks query failed** | Token, warehouse path, firewall, or UC grants | Check **Log stream**; verify PAT and SQL warehouse; Databricks IP allow lists / Private Link. |
 | Wrong UI: **Microsoft login**, “Gotham”, **Gems** sidebar | You opened a **different URL** / different Web App | Use **Default domain** from **your** GEMS-API **Overview**. This CSV API uses **API key**, not Entra login in the browser (except whatever the portal itself uses). |
@@ -370,10 +381,10 @@ Invoke-WebRequest -Uri "$base/export/goldanimalcharacteristics.csv" -Headers @{ 
 
 ## 12. Security checklist
 
-- Keep **`DATABRICKS_TOKEN`**, **`GEMS_API_KEY`**, and **`API/.env`** out of git and out of zip artifacts.
+- Keep **`DATABRICKS_TOKEN`**, **`API_KEY_PEPPER`**, **`AZURE_TABLES_CONNECTION_STRING`**, user API keys, and **`API/.env`** out of git and out of zip artifacts.
 - Use **HTTPS** only for real use; **`HTTPS only`** on the Web App is recommended.
 - **`ALLOWED_TABLES`** is the only table names the code uses for user-driven exports — clients cannot pass arbitrary SQL.
-- Rotate PAT and API key if exposed (e.g. screenshots with **curl** showing the key).
+- Revoke exposed user keys from the dashboard API Access page. Rotate `API_KEY_PEPPER` only if the server-side hashing secret is exposed.
 
 ---
 
