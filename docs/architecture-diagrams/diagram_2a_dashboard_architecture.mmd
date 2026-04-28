@@ -1,0 +1,40 @@
+﻿flowchart LR
+  classDef frontend fill:#DBEAFE,stroke:#2563EB,color:#0F172A,stroke-width:2px
+  classDef module fill:#EDE9FE,stroke:#7C3AED,color:#1E1B4B,stroke-width:2px
+  classDef auth fill:#FEF3C7,stroke:#D97706,color:#451A03,stroke-width:2px
+  classDef data fill:#DCFCE7,stroke:#16A34A,color:#052E16,stroke-width:2px
+  classDef ai fill:#FCE7F3,stroke:#DB2777,color:#500724,stroke-width:2px
+
+  User([🌐 User]):::frontend
+  subgraph Azure[⚡ Azure App Service]
+    EasyAuth{{Auth0 via Azure Easy Auth}}:::auth
+    App(Streamlit app.py):::frontend
+  end
+
+  subgraph Pages[📊 Dashboard Pages]
+    APIAccess([API Access]):::frontend
+    Chat([Chat]):::frontend
+    Explore([Explore]):::frontend
+    Modeling([Modeling]):::frontend
+  end
+
+  subgraph Modules[🧩 Shared gems modules]
+    Auth[gems_auth]:::auth
+    Data[gems_data and stats]:::module
+    AI[gems_ai and chat]:::ai
+    UI[gems_ui and watermarks]:::module
+  end
+
+  subgraph Stores[🗄️ Data and Services]
+    DB[(Databricks SQL gems_catalog.gold_v1)]:::data
+    Keys[(Azure Table Storage gemsApiKeys)]:::auth
+    OpenAI[(OpenAI models)]:::ai
+  end
+
+  User --> EasyAuth --> App
+  App --> APIAccess & Chat & Explore & Modeling
+  APIAccess --> Auth --> Keys
+  Chat --> AI --> OpenAI
+  Explore --> Data --> DB
+  Modeling --> Data
+  App --> UI

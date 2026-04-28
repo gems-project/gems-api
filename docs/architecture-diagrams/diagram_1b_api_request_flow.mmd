@@ -1,0 +1,18 @@
+﻿sequenceDiagram
+  autonumber
+  participant C as 🌐 Client
+  participant A as ⚡ FastAPI App Service
+  participant K as 🔐 Azure Table Storage
+  participant D as 🗄️ Databricks SQL
+  participant U as 📊 Unity Catalog Gold
+
+  C->>A: GET /tables or /export/table.csv with X-API-Key
+  A->>A: Validate header and hash with API_KEY_PEPPER
+  A->>K: Lookup hash in gemsApiKeys
+  K-->>A: Key metadata owner revokedAt lastUsedAt
+  A->>A: Check revoked status owner allowlist and table allowlist
+  A->>D: SELECT or DESCRIBE HISTORY using server PAT
+  D->>U: Read gems_catalog.gold_v1 table
+  U-->>D: Rows or Delta version metadata
+  D-->>A: Query result
+  A-->>C: JSON metadata or CSV stream

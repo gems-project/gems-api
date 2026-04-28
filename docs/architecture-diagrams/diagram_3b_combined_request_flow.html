@@ -1,0 +1,59 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Combined Request Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { margin:0; font-family: Inter, system-ui, sans-serif; background: linear-gradient(135deg,#f8fafc,#eef2ff); color:#0f172a; }
+    main { max-width: 1280px; margin: 0 auto; padding: 32px; }
+    .card { background: rgba(255,255,255,.92); border: 1px solid #dbeafe; border-radius: 24px; box-shadow: 0 24px 60px rgba(15,23,42,.12); padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.03em; }
+    p { margin: 0 0 22px; color:#475569; font-size: 15px; }
+    .mermaid { display:flex; justify-content:center; width:100%; overflow:auto; background:#ffffff; border-radius:18px; padding:18px; box-sizing:border-box; }
+    a { color:#2563eb; text-decoration:none; font-weight:600; }
+    .back { margin-top:18px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Combined Request Flow</h1>
+      <p>User creates a key in the dashboard and uses it against the API to retrieve Databricks data.</p>
+      <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant U as 🌐 User
+  participant H as 🔐 Auth0 and Easy Auth
+  participant S as 📊 Streamlit Dashboard
+  participant K as 🔑 Azure Table Storage
+  participant A as ⚡ FastAPI Export API
+  participant D as 🗄️ Databricks SQL
+
+  U->>H: Sign in to dashboard
+  H-->>S: Authorized email identity
+  U->>S: Open API Access and create personal key
+  S->>K: Store HMAC hash with owner metadata
+  K-->>S: Saved key record
+  S-->>U: Show raw gems_live key once and API base URL
+  U->>A: Call /versions or /export/table.csv with X-API-Key
+  A->>K: Validate hash revoked status and owner allowlist
+  K-->>A: Key is active
+  A->>D: Query allowed table in gems_catalog.gold_v1
+  D-->>A: Version metadata rows or CSV rows
+  A-->>U: JSON or CSV response
+  Note over S,D: Dashboard pages may also query Databricks directly for Explore and Modeling
+
+      </div>
+      <p class="back"><a href="index.html">Back to diagram index</a></p>
+    </section>
+  </main>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose', fontFamily: 'Inter, system-ui, sans-serif', themeVariables: { primaryColor: '#EDE9FE', primaryTextColor: '#0F172A', primaryBorderColor: '#7C3AED', lineColor: '#64748B', secondaryColor: '#DBEAFE', tertiaryColor: '#DCFCE7', background: '#FFFFFF', mainBkg: '#FFFFFF', fontFamily: 'Inter, system-ui, sans-serif' } });
+  </script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+﻿flowchart LR
+  classDef frontend fill:#DBEAFE,stroke:#2563EB,color:#0F172A,stroke-width:2px
+  classDef backend fill:#EDE9FE,stroke:#7C3AED,color:#1E1B4B,stroke-width:2px
+  classDef auth fill:#FEF3C7,stroke:#D97706,color:#451A03,stroke-width:2px
+  classDef data fill:#DCFCE7,stroke:#16A34A,color:#052E16,stroke-width:2px
+  classDef external fill:#FFE4E6,stroke:#E11D48,color:#4C0519,stroke-width:2px
+
+  User([🌐 Collaborator]):::frontend
+
+  subgraph DashboardTier[📊 Dashboard Tier]
+    EasyAuth{{Auth0 Easy Auth}}:::auth
+    Dashboard(Streamlit Dashboard):::frontend
+    APIPage([API Access Page]):::frontend
+  end
+
+  subgraph APITier[⚡ Export API Tier]
+    FastAPI(FastAPI CSV and JSON API):::backend
+    APISettings{{API App Settings}}:::auth
+  end
+
+  subgraph SharedSecurity[🔐 Shared Key Infrastructure]
+    Keys[(Azure Table Storage gemsApiKeys)]:::auth
+    Pepper[Shared API_KEY_PEPPER]:::auth
+  end
+
+  subgraph DataLayer[🗄️ Data Layer]
+    Warehouse[(Databricks SQL Warehouse)]:::data
+    Gold[(Unity Catalog gems_catalog.gold_v1)]:::data
+  end
+
+  OpenAI[(OpenAI for chat)]:::external
+
+  User --> EasyAuth --> Dashboard
+  Dashboard --> APIPage
+  APIPage -->|generate and revoke keys| Keys
+  APIPage --> Pepper
+  User -->|X-API-Key from dashboard| FastAPI
+  FastAPI --> Keys
+  FastAPI --> APISettings
+  FastAPI --> Warehouse --> Gold
+  Dashboard -->|direct dashboard queries| Warehouse
+  Dashboard --> OpenAI

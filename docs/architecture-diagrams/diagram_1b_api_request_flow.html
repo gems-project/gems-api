@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FastAPI Request Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { margin:0; font-family: Inter, system-ui, sans-serif; background: linear-gradient(135deg,#f8fafc,#eef2ff); color:#0f172a; }
+    main { max-width: 1280px; margin: 0 auto; padding: 32px; }
+    .card { background: rgba(255,255,255,.92); border: 1px solid #dbeafe; border-radius: 24px; box-shadow: 0 24px 60px rgba(15,23,42,.12); padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.03em; }
+    p { margin: 0 0 22px; color:#475569; font-size: 15px; }
+    .mermaid { display:flex; justify-content:center; width:100%; overflow:auto; background:#ffffff; border-radius:18px; padding:18px; box-sizing:border-box; }
+    a { color:#2563eb; text-decoration:none; font-weight:600; }
+    .back { margin-top:18px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>FastAPI Request Flow</h1>
+      <p>Client request validation, HMAC lookup, allowlist checks, Databricks query, and JSON or CSV response.</p>
+      <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 🌐 Client
+  participant A as ⚡ FastAPI App Service
+  participant K as 🔐 Azure Table Storage
+  participant D as 🗄️ Databricks SQL
+  participant U as 📊 Unity Catalog Gold
+
+  C->>A: GET /tables or /export/table.csv with X-API-Key
+  A->>A: Validate header and hash with API_KEY_PEPPER
+  A->>K: Lookup hash in gemsApiKeys
+  K-->>A: Key metadata owner revokedAt lastUsedAt
+  A->>A: Check revoked status owner allowlist and table allowlist
+  A->>D: SELECT or DESCRIBE HISTORY using server PAT
+  D->>U: Read gems_catalog.gold_v1 table
+  U-->>D: Rows or Delta version metadata
+  D-->>A: Query result
+  A-->>C: JSON metadata or CSV stream
+
+      </div>
+      <p class="back"><a href="index.html">Back to diagram index</a></p>
+    </section>
+  </main>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose', fontFamily: 'Inter, system-ui, sans-serif', themeVariables: { primaryColor: '#EDE9FE', primaryTextColor: '#0F172A', primaryBorderColor: '#7C3AED', lineColor: '#64748B', secondaryColor: '#DBEAFE', tertiaryColor: '#DCFCE7', background: '#FFFFFF', mainBkg: '#FFFFFF', fontFamily: 'Inter, system-ui, sans-serif' } });
+  </script>
+</body>
+</html>

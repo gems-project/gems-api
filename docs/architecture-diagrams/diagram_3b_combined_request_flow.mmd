@@ -1,0 +1,22 @@
+﻿sequenceDiagram
+  autonumber
+  participant U as 🌐 User
+  participant H as 🔐 Auth0 and Easy Auth
+  participant S as 📊 Streamlit Dashboard
+  participant K as 🔑 Azure Table Storage
+  participant A as ⚡ FastAPI Export API
+  participant D as 🗄️ Databricks SQL
+
+  U->>H: Sign in to dashboard
+  H-->>S: Authorized email identity
+  U->>S: Open API Access and create personal key
+  S->>K: Store HMAC hash with owner metadata
+  K-->>S: Saved key record
+  S-->>U: Show raw gems_live key once and API base URL
+  U->>A: Call /versions or /export/table.csv with X-API-Key
+  A->>K: Validate hash revoked status and owner allowlist
+  K-->>A: Key is active
+  A->>D: Query allowed table in gems_catalog.gold_v1
+  D-->>A: Version metadata rows or CSV rows
+  A-->>U: JSON or CSV response
+  Note over S,D: Dashboard pages may also query Databricks directly for Explore and Modeling

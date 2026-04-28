@@ -1,0 +1,34 @@
+﻿flowchart LR
+  classDef client fill:#DBEAFE,stroke:#2563EB,color:#0F172A,stroke-width:2px
+  classDef backend fill:#EDE9FE,stroke:#7C3AED,color:#1E1B4B,stroke-width:2px
+  classDef auth fill:#FEF3C7,stroke:#D97706,color:#451A03,stroke-width:2px
+  classDef data fill:#DCFCE7,stroke:#16A34A,color:#052E16,stroke-width:2px
+  classDef external fill:#FFE4E6,stroke:#E11D48,color:#4C0519,stroke-width:2px
+
+  subgraph Clients[🌐 Clients]
+    Browser([Swagger Browser]):::client
+    Scripts([Research Scripts]):::client
+  end
+
+  subgraph Azure[⚡ Azure App Service]
+    API(FastAPI and Gunicorn):::backend
+    Env{{App Settings}}:::auth
+  end
+
+  subgraph KeyStore[🔐 API Key Storage]
+    Table[(Azure Table Storage gemsApiKeys)]:::auth
+    Pepper[API_KEY_PEPPER]:::auth
+  end
+
+  subgraph Databricks[🗄️ Databricks]
+    Warehouse[(SQL Warehouse)]:::data
+    Catalog[(gems_catalog.gold_v1)]:::data
+  end
+
+  Browser -->|HTTPS X-API-Key| API
+  Scripts -->|HTTPS X-API-Key| API
+  API -->|hash key lookup| Table
+  API -->|HMAC pepper| Pepper
+  API -->|PAT from settings| Warehouse
+  Env --> API
+  Warehouse --> Catalog

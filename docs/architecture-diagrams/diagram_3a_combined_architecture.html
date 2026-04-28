@@ -1,0 +1,79 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Combined Architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { margin:0; font-family: Inter, system-ui, sans-serif; background: linear-gradient(135deg,#f8fafc,#eef2ff); color:#0f172a; }
+    main { max-width: 1280px; margin: 0 auto; padding: 32px; }
+    .card { background: rgba(255,255,255,.92); border: 1px solid #dbeafe; border-radius: 24px; box-shadow: 0 24px 60px rgba(15,23,42,.12); padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.03em; }
+    p { margin: 0 0 22px; color:#475569; font-size: 15px; }
+    .mermaid { display:flex; justify-content:center; width:100%; overflow:auto; background:#ffffff; border-radius:18px; padding:18px; box-sizing:border-box; }
+    a { color:#2563eb; text-decoration:none; font-weight:600; }
+    .back { margin-top:18px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Combined Architecture</h1>
+      <p>Dashboard and API tiers share key storage and Databricks while supporting direct dashboard queries.</p>
+      <div class="mermaid">
+flowchart LR
+  classDef frontend fill:#DBEAFE,stroke:#2563EB,color:#0F172A,stroke-width:2px
+  classDef backend fill:#EDE9FE,stroke:#7C3AED,color:#1E1B4B,stroke-width:2px
+  classDef auth fill:#FEF3C7,stroke:#D97706,color:#451A03,stroke-width:2px
+  classDef data fill:#DCFCE7,stroke:#16A34A,color:#052E16,stroke-width:2px
+  classDef external fill:#FFE4E6,stroke:#E11D48,color:#4C0519,stroke-width:2px
+
+  User([🌐 Collaborator]):::frontend
+
+  subgraph DashboardTier[📊 Dashboard Tier]
+    EasyAuth{{Auth0 Easy Auth}}:::auth
+    Dashboard(Streamlit Dashboard):::frontend
+    APIPage([API Access Page]):::frontend
+  end
+
+  subgraph APITier[⚡ Export API Tier]
+    FastAPI(FastAPI CSV and JSON API):::backend
+    APISettings{{API App Settings}}:::auth
+  end
+
+  subgraph SharedSecurity[🔐 Shared Key Infrastructure]
+    Keys[(Azure Table Storage gemsApiKeys)]:::auth
+    Pepper[Shared API_KEY_PEPPER]:::auth
+  end
+
+  subgraph DataLayer[🗄️ Data Layer]
+    Warehouse[(Databricks SQL Warehouse)]:::data
+    Gold[(Unity Catalog gems_catalog.gold_v1)]:::data
+  end
+
+  OpenAI[(OpenAI for chat)]:::external
+
+  User --> EasyAuth --> Dashboard
+  Dashboard --> APIPage
+  APIPage -->|generate and revoke keys| Keys
+  APIPage --> Pepper
+  User -->|X-API-Key from dashboard| FastAPI
+  FastAPI --> Keys
+  FastAPI --> APISettings
+  FastAPI --> Warehouse --> Gold
+  Dashboard -->|direct dashboard queries| Warehouse
+  Dashboard --> OpenAI
+
+      </div>
+      <p class="back"><a href="index.html">Back to diagram index</a></p>
+    </section>
+  </main>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose', fontFamily: 'Inter, system-ui, sans-serif', themeVariables: { primaryColor: '#EDE9FE', primaryTextColor: '#0F172A', primaryBorderColor: '#7C3AED', lineColor: '#64748B', secondaryColor: '#DBEAFE', tertiaryColor: '#DCFCE7', background: '#FFFFFF', mainBkg: '#FFFFFF', fontFamily: 'Inter, system-ui, sans-serif' } });
+  </script>
+</body>
+</html>

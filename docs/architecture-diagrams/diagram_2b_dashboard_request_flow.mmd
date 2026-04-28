@@ -1,0 +1,25 @@
+﻿sequenceDiagram
+  autonumber
+  participant U as 🌐 User
+  participant E as 🔐 Azure Easy Auth and Auth0
+  participant S as 📊 Streamlit Dashboard
+  participant M as 🧩 gems modules
+  participant D as 🗄️ Databricks SQL
+  participant K as 🔑 Azure Table Storage
+
+  U->>E: Open dashboard and sign in
+  E-->>S: Authenticated identity with email claims
+  S->>M: require_authorized_user checks users and domains
+  U->>S: Select API Access Chat Explore or Modeling
+  alt API Access
+    S->>K: Create list or revoke hashed API keys
+    K-->>S: Key metadata and one time raw key on create
+  else Explore or Modeling
+    S->>M: Fetch and cache allowed gold table data
+    M->>D: Query gems_catalog.gold_v1 with PAT
+    D-->>M: Rows and schema
+  else Chat
+    S->>M: Compose context and prompt
+    M-->>S: AI answer using configured OpenAI model
+  end
+  S-->>U: Render tables charts scripts or chat response
