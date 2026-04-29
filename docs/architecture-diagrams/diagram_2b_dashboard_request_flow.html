@@ -15,7 +15,12 @@
     p { margin: 0 0 22px; color:#475569; font-size: 15px; }
     .mermaid { display:flex; justify-content:center; width:100%; overflow:auto; background:#ffffff; border-radius:18px; padding:18px; box-sizing:border-box; }
     a { color:#2563eb; text-decoration:none; font-weight:600; }
-    .back { margin-top:18px; }
+    .diagram-nav { margin-top:18px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:#f8fafc; border:1px solid #dbeafe; border-radius:18px; padding:12px 14px; }
+    .diagram-nav a, .diagram-nav span { display:inline-flex; align-items:center; justify-content:center; min-height:38px; border-radius:999px; padding:0 14px; font-size:14px; font-weight:600; }
+    .diagram-nav a { color:#2563eb; background:#ffffff; border:1px solid #bfdbfe; }
+    .diagram-nav a:hover { background:#eff6ff; }
+    .diagram-nav .disabled { color:#94a3b8; background:#e2e8f0; border:1px solid #cbd5e1; }
+    .diagram-nav .position { color:#475569; background:#eef2ff; border:1px solid #dbeafe; }
   </style>
 </head>
 <body>
@@ -51,9 +56,23 @@ sequenceDiagram
   S-->>U: Render tables charts scripts or chat response
 
       </div>
-      <p class="back"><a href="index.html">Back to diagram index</a></p>
+<nav class="diagram-nav" aria-label="Diagram navigation">
+        <a class="prev" href="diagram_2a_dashboard_architecture.html" aria-label="Previous diagram">← Prev</a>
+        <a class="gallery" href="index.html" aria-label="Diagram gallery">Gallery</a>
+        <span class="position">4 of 6</span>
+        <a class="next" href="diagram_3a_combined_architecture.html" aria-label="Next diagram">Next →</a>
+      </nav>
     </section>
   </main>
+  <script>
+    const previousDiagram = 'diagram_2a_dashboard_architecture.html';
+    const nextDiagram = 'diagram_3a_combined_architecture.html';
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' && previousDiagram) window.location.href = previousDiagram;
+      if (event.key === 'ArrowRight' && nextDiagram) window.location.href = nextDiagram;
+      if (event.key === 'Escape') window.location.href = 'index.html';
+    });
+  </script>
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
     mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose', fontFamily: 'Inter, system-ui, sans-serif', themeVariables: { primaryColor: '#EDE9FE', primaryTextColor: '#0F172A', primaryBorderColor: '#7C3AED', lineColor: '#64748B', secondaryColor: '#DBEAFE', tertiaryColor: '#DCFCE7', background: '#FFFFFF', mainBkg: '#FFFFFF', fontFamily: 'Inter, system-ui, sans-serif' } });
