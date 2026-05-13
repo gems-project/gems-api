@@ -102,9 +102,14 @@ else:
 
 st.markdown("### API connection details")
 base_display = api_base_url or "https://YOUR-GEMS-API.azurewebsites.net"
+docs_display = f"{base_display}/docs"
 st.code(base_display, language="text")
-st.markdown("Every data request must include this header:")
-st.code("X-API-Key: YOUR_API_KEY", language="text")
+st.markdown("Interactive API documentation:")
+st.markdown(f"[Open Swagger UI]({docs_display})")
+st.markdown(
+    "Every data request must include an `X-API-Key` header. The examples below "
+    "read the key from `GEMS_API_KEY` instead of pasting it directly into commands."
+)
 
 if allowed_tables:
     with st.expander("Available table names", expanded=False):
@@ -118,6 +123,9 @@ python_all_tables = dedent(
     from pathlib import Path
 
     import requests
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
 
     API_KEY = os.environ["GEMS_API_KEY"]
     BASE_URL = "{base_display}"
@@ -186,10 +194,18 @@ python_all_tables = dedent(
 python_query = dedent(
     f"""
     import os
+    from pathlib import Path
+
     import pandas as pd
     import requests
+    from dotenv import load_dotenv
 
-    API_KEY = os.environ["GEMS_API_KEY"]
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+
+    API_KEY = os.environ.get("GEMS_API_KEY", "")
+    if not API_KEY:
+        raise RuntimeError("GEMS_API_KEY is not set. Add it to .env or the environment.")
+
     BASE_URL = "{base_display}"
     TABLE = "goldbodyweight"
 
@@ -209,20 +225,79 @@ python_query = dedent(
     """
 ).strip()
 
+r_query = dedent(
+    f"""
+    library(httr2)
+    library(jsonlite)
+
+    # Load .env next to this script
+    args <- commandArgs(trailingOnly = FALSE)
+    file_line <- grep("^--file=", args, value = TRUE)
+    env_path <- if (length(file_line)) {{
+      script_file <- sub("^--file=", "", file_line)
+      file.path(dirname(normalizePath(script_file, winslash = "/")), ".env")
+    }} else {{
+      file.path(getwd(), ".env")
+    }}
+    if (file.exists(env_path)) {{
+      readRenviron(env_path)
+    }}
+
+    api_key <- Sys.getenv("GEMS_API_KEY", unset = "")
+    if (!nzchar(api_key)) {{
+      stop("GEMS_API_KEY is not set. Add it to .env or the environment.", call. = FALSE)
+    }}
+
+    base_url <- "{base_display}"
+    table <- "goldbodyweight"
+
+    req <- request(paste0(base_url, "/preview/", table)) |>
+      req_headers("X-API-Key" = api_key) |>
+      req_url_query(limit = 100) |>
+      req_timeout(60)
+
+    resp <- req_perform(req)
+    resp_check_status(resp)
+    payload <- resp_body_json(resp, simplifyVector = TRUE)
+
+    df <- as.data.frame(payload$rows)
+    print(head(df))
+    """
+).strip()
+
 r_all_tables = dedent(
     f"""
     library(httr2)
     library(jsonlite)
 
-    api_key <- Sys.getenv("GEMS_API_KEY")
+    # Load .env next to this script
+    args <- commandArgs(trailingOnly = FALSE)
+    file_line <- grep("^--file=", args, value = TRUE)
+    env_path <- if (length(file_line)) {{
+      script_file <- sub("^--file=", "", file_line)
+      file.path(dirname(normalizePath(script_file, winslash = "/")), ".env")
+    }} else {{
+      file.path(getwd(), ".env")
+    }}
+    if (file.exists(env_path)) {{
+      readRenviron(env_path)
+    }}
+
+    api_key <- Sys.getenv("GEMS_API_KEY", unset = "")
+    if (!nzchar(api_key)) {{
+      stop("GEMS_API_KEY is not set. Add it to .env or the environment.", call. = FALSE)
+    }}
+
     base_url <- "{base_display}"
     data_dir <- "gems_data"
     dir.create(data_dir, showWarnings = FALSE)
 
     get_json <- function(path) {{
       req <- request(paste0(base_url, path)) |>
-        req_headers("X-API-Key" = api_key)
+        req_headers("X-API-Key" = api_key) |>
+        req_timeout(60)
       resp <- req_perform(req)
+      resp_check_status(resp)
       resp_body_json(resp)
     }}
 
@@ -249,7 +324,7 @@ r_all_tables = dedent(
       remote_version <- remote$version
       local_version <- if (is.null(local)) NULL else local$version
 
-      if (!is.null(local_version) && identical(local_version, remote_version)) {{
+      if (identical(local_version, remote_version)) {{
         message(table, " is already up to date. version=", remote_version)
         skipped <- skipped + 1
         next
@@ -263,8 +338,10 @@ r_all_tables = dedent(
       }}
 
       req <- request(paste0(base_url, "/export/", table, ".csv")) |>
-        req_headers("X-API-Key" = api_key)
+        req_headers("X-API-Key" = api_key) |>
+        req_timeout(600)
       resp <- req_perform(req)
+      resp_check_status(resp)
 
       csv_path <- file.path(data_dir, paste0(table, ".csv"))
       writeBin(resp_body_raw(resp), csv_path)
@@ -296,14 +373,30 @@ with st.expander("API documentation and examples", expanded=False):
 
     with quick:
         st.markdown(
-            "The recommended refresh workflow checks each table version first. "
-            "If the version changed, the script downloads the full current snapshot "
-            "and overwrites the local CSV. If not, it skips the download."
+            """
+            **Recommended workflow**
+
+            1. Generate an API key above.
+            2. Create a `.env` file in the same folder as your Python or R script:
+            """
         )
-        st.code(
-            f'curl -H "X-API-Key: YOUR_API_KEY" "{base_display}/tables"',
-            language="bash",
+        st.code('GEMS_API_KEY="gems_live_your_real_key_here"', language="text")
+        st.markdown(
+            """
+            3. Use the Python or R **All-table version-aware refresh** script in the next tabs.
+               It checks table versions, prints which tables are already current or changed,
+               downloads only changed tables, and overwrites local CSV files.
+
+            Run the refresh script whenever you want to check for updates. If a table has a
+            newer version, the script tells you and downloads the latest snapshot. If nothing
+            changed, it skips the download.
+            """
         )
+        st.markdown(
+            "Opening the base API URL directly may show a short JSON service message. "
+            "For interactive browser testing, use Swagger UI:"
+        )
+        st.code(docs_display, language="text")
 
     with python_tab:
         st.markdown("All-table version-aware refresh:")
@@ -314,6 +407,8 @@ with st.expander("API documentation and examples", expanded=False):
     with r_tab:
         st.markdown("All-table version-aware refresh:")
         st.code(r_all_tables, language="r")
+        st.markdown("Small preview query:")
+        st.code(r_query, language="r")
 
     with endpoints_tab:
         st.dataframe(endpoints, use_container_width=True, hide_index=True)
@@ -321,11 +416,11 @@ with st.expander("API documentation and examples", expanded=False):
     with security_tab:
         st.markdown(
             """
-            - Store your key in an environment variable named `GEMS_API_KEY`.
+            - Store your key in a `.env` file next to your Python/R script as `GEMS_API_KEY="gems_live_..."`.
+            - The Python/R examples load `.env` automatically.
             - Do not commit API keys to GitHub, shared notebooks, manuscripts, or email.
             - Revoke a key immediately if it is exposed.
             - Generate separate keys for separate computers or workflows.
             """
         )
-        st.code('$env:GEMS_API_KEY="gems_live_..."', language="powershell")
-        st.code('export GEMS_API_KEY="gems_live_..."', language="bash")
+        st.code('GEMS_API_KEY="gems_live_..."', language="text")

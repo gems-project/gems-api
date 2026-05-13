@@ -32,6 +32,18 @@ _API_KEY_PREFIX = "gems_live_"
 _API_KEY_PARTITION = "api_key"
 
 
+@app.get("/")
+def root():
+    return {
+        "name": "GEMS Gold Export API",
+        "message": "Use /docs for interactive documentation. Data endpoints require X-API-Key.",
+        "docs": "/docs",
+        "health": "/health",
+        "tables": "/tables",
+        "versions": "/versions",
+    }
+
+
 def _cfg() -> dict:
     host = os.getenv("DATABRICKS_HOST", "").strip().rstrip("/")
     if host.startswith("https://"):

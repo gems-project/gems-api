@@ -527,35 +527,26 @@ Saved gems_data/goldcontributor.csv
 Done. Updated 2 table(s); skipped 1 table(s).
 ```
 
-## Local Testing Commands
+## Local User Workflow
 
-PowerShell:
+The user-facing Python/R examples load `GEMS_API_KEY` from a `.env` file next to the script. Users should:
 
-```powershell
-$env:GEMS_API_KEY = "gems_live_YOUR_REAL_KEY"
-$env:GEMS_API_BASE = "https://<api-default-domain>"
+1. Generate an API key in the dashboard API Access page.
+2. Create a `.env` file in the same folder as their Python or R script:
 
-curl.exe -H "X-API-Key: $env:GEMS_API_KEY" "$env:GEMS_API_BASE/tables"
-curl.exe -H "X-API-Key: $env:GEMS_API_KEY" "$env:GEMS_API_BASE/version/goldbodyweight"
-curl.exe -L -H "X-API-Key: $env:GEMS_API_KEY" "$env:GEMS_API_BASE/export/goldbodyweight.csv" -o goldbodyweight.csv
-Get-Item .\goldbodyweight.csv
+```text
+GEMS_API_KEY="gems_live_YOUR_REAL_KEY"
 ```
 
-Command Prompt:
+3. Run the Python or R all-table version-aware refresh script from the dashboard API Access page.
 
-```cmd
-set "GEMS_API_KEY=gems_live_YOUR_REAL_KEY"
-set "GEMS_API_BASE=https://<api-default-domain>"
+Users should run the refresh script from time to time when they want to check for new data. The script checks each table version, reports which tables are already current or have newer versions, downloads only changed tables, and overwrites local CSV files.
 
-curl -H "X-API-Key: %GEMS_API_KEY%" "%GEMS_API_BASE%/tables"
-curl -H "X-API-Key: %GEMS_API_KEY%" "%GEMS_API_BASE%/version/goldbodyweight"
-curl -L -H "X-API-Key: %GEMS_API_KEY%" "%GEMS_API_BASE%/export/goldbodyweight.csv" -o goldbodyweight.csv
-dir goldbodyweight.csv
+The API root `/` returns a short service message. For interactive browser testing, open:
+
+```text
+https://<api-default-domain>/docs
 ```
-
-Important PowerShell note:
-
-`curl` in PowerShell is often an alias for `Invoke-WebRequest`. Use `curl.exe` for real curl behavior.
 
 ## Deployment Commands
 
