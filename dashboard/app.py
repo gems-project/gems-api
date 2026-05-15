@@ -192,19 +192,17 @@ def _animal_count_live():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _date_range_live():
-    for table in ("bronzeexperimentaldesign", "goldexperimentaldesign"):
-        date_col = _resolve_col(table, "Date", "date", "measurementDate", "MeasurementDate")
-        if not date_col:
-            continue
-        try:
-            row = _fetch_one(
-                f"SELECT MIN({_col(date_col)}) AS d_min, MAX({_col(date_col)}) AS d_max "
-                f"FROM {_fq(table)}"
-            )
-            if row and row[0] is not None and row[1] is not None:
-                return [_json_date(row[0]), _json_date(row[1])]
-        except Exception:
-            continue
+    try:
+        row = _fetch_one(
+            "SELECT "
+            "MIN(CASE WHEN `Date` IS NOT NULL AND `Date` > DATE '1990-01-01' THEN `Date` END) AS min_date, "
+            "MAX(CASE WHEN `Date` IS NOT NULL AND `Date` <= current_date() THEN `Date` END) AS max_date "
+            "FROM `gems_catalog`.`gems_schema`.`bronzeexperimentaldesign`"
+        )
+        if row and row[0] is not None and row[1] is not None:
+            return [_json_date(row[0]), _json_date(row[1])]
+    except Exception:
+        return None
     return None
 
 

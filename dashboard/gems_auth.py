@@ -138,15 +138,18 @@ def _auth0_management_token() -> str:
 def resend_verification_email(user_id: str) -> tuple[bool, str]:
     domain = os.environ.get("AUTH0_DOMAIN", "").strip().rstrip("/")
     if not domain:
-        return False, "Set AUTH0_DOMAIN to enable verification email resend."
+        return (
+            False,
+            "Email verification is not configured on this server. Contact the administrator "
+            "or check your spam folder for the original Auth0 signup email.",
+        )
 
     token = _auth0_management_token()
     if not token:
         return (
             False,
-            "Verification email resend is not configured for this dashboard. "
-            "Please check your Auth0 verification email (including spam) or ask the "
-            "dashboard administrator to send a verification email from Auth0.",
+            "Email verification is not configured on this server. Contact the administrator "
+            "or check your spam folder for the original Auth0 signup email.",
         )
 
     response = requests.post(
@@ -171,7 +174,7 @@ def render_email_verification_banner(info: CurrentUser | None = None) -> None:
         if ok:
             st.success(message)
         else:
-            st.info(message)
+            st.warning(message)
 
 
 def require_authorized_user() -> str:
