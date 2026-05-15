@@ -1,13 +1,4 @@
-"""OpenAI tool-calling agent for the Chat page (Genie-style).
-
-The model gets three tools: list_tables, get_schema, run_sql. It decides when
-to call them, and we run a short loop (max N iterations) until the model
-returns a final message with no more tool calls.
-
-All SQL is validated inside the data layer (gems_data._validate_select_sql),
-so even if the model emits something unsafe we're protected: SELECT/WITH only,
-single statement, allowlisted tables or CTE names, outer LIMIT wrap.
-"""
+"""Tool-calling chat agent with aggregate-only data guardrails."""
 
 from __future__ import annotations
 
@@ -16,33 +7,71 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from gems_data import GemsData
+from gems_data import GemsData, display_name
+from llm_client import get_llm_client, get_llm_model
+
+_DATA_DICTIONARY_PATH = os.path.join(
+    os.path.dirname(__file__), "resources", "data_dictionary.json"
+)
+
+
+def _load_data_dictionary() -> dict:
+    try:
+        with open(_DATA_DICTIONARY_PATH, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {"tables": []}
+
+
+def _dictionary_prompt() -> str:
+    dictionary = _load_data_dictionary()
+    compact_tables = []
+    for table in dictionary.get("tables", []):
+        compact_tables.append(
+            {
+                "name": table.get("name"),
+                "description": table.get("description", ""),
+                "columns": [
+                    {
+                        "name": col.get("name"),
+                        "dtype": col.get("dtype"),
+                        "description": col.get("description", ""),
+                        "unit": col.get("unit", ""),
+                    }
+                    for col in table.get("columns", [])
+                ],
+            }
+        )
+    return json.dumps({"tables": compact_tables}, default=str)[:60_000]
+
 
 _SYSTEM_PROMPT = """You are a data analyst assistant for the GEMS project
 (animal science / GreenFeed research data at Cornell).
 
-You have READ-ONLY access to Delta tables in `gems_catalog.gold_v1` via three tools:
-- list_tables(): returns the names of the tables you are allowed to query.
-- get_schema(table): returns column names and types for one table.
-- run_sql(sql, limit): runs a single SELECT (or WITH ... SELECT) and returns rows.
+ABSOLUTE PRIVACY RULE:
+- Never request, expose, summarize, or reproduce row-level data.
+- You may only use schema, column descriptions, table summaries, and aggregated
+  or computed query results.
+- If a question requires individual row-level records, refuse and suggest an
+  aggregate alternative.
 
-How to answer:
-1. If you don't know what's available, call list_tables first.
-2. Before writing SQL, call get_schema on the tables you plan to use so you know
-   the real column names and types.
-3. Write a SELECT that uses fully-qualified names: gems_catalog.gold_v1.<table>.
-4. Call run_sql. If the server returns an error, read it and fix the SQL.
-5. Summarize the result in plain English. Mention row counts, aggregations,
-   caveats (small n, missing values). If the server flagged `truncated: true`,
-   tell the user more rows exist.
+Use tools to answer questions:
+1. list_tables() to see available tables.
+2. describe_table(name) before SQL so you know real columns, dtypes, sample size,
+   and null percentages.
+3. run_aggregate_query(sql) only for aggregate/statistical summaries. The server
+   rejects unsafe SQL and row dumps.
+4. plot(spec) only after an aggregate result exists.
 
-Rules:
-- Only SELECT / WITH. No DDL, no DML. The server will reject anything else.
-- Always use the `gems_catalog.gold_v1` prefix on tables.
-- Prefer aggregations over dumping raw rows when the question is quantitative.
-- Keep limits reasonable (default 1000; bump up only when needed).
-- Do not fabricate values that did not appear in a tool result.
-- If the question cannot be answered from these tables, say so.
+SQL rules:
+- Use SELECT/WITH only.
+- Prefer COUNT, AVG, SUM, MIN, MAX, GROUP BY, and DISTINCT.
+- Use fully-qualified names when writing SQL.
+- Do not use SELECT *.
+- Do not ask for individual animal/person/source-file records.
+- Do not fabricate values that did not appear in tool results.
+
+Data dictionary:
 """
 
 
@@ -51,24 +80,19 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_tables",
-            "description": "List the gold tables this API key is allowed to query.",
+            "description": "List available GEMS tables with business descriptions.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "get_schema",
-            "description": "Return the columns and types for a single allowlisted table.",
+            "name": "describe_table",
+            "description": "Return columns, dtypes, descriptions, sample size, and null percentages.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "table": {
-                        "type": "string",
-                        "description": "Table name only, no catalog/schema prefix.",
-                    }
-                },
-                "required": ["table"],
+                "properties": {"name": {"type": "string", "description": "Raw table name."}},
+                "required": ["name"],
                 "additionalProperties": False,
             },
         },
@@ -76,27 +100,36 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "run_sql",
+            "name": "run_aggregate_query",
             "description": (
-                "Run a read-only SQL query (SELECT or WITH ... SELECT) against "
-                "the gold tables and return the rows. Server enforces SELECT-only "
-                "and the allowlist, and applies a row cap."
+                "Run a validated aggregate SELECT. Must aggregate/group/distinct, "
+                "or be a LIMIT <= 50 preview without PII/redacted columns."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "A single SELECT or WITH ... SELECT statement.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max rows to return (default 1000; server caps hard).",
-                        "minimum": 1,
-                        "maximum": 100000,
-                    },
+                    "sql": {"type": "string", "description": "Single aggregate SELECT/WITH query."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
                 "required": ["sql"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot",
+            "description": "Create a chart spec from the most recent aggregate result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_type": {"type": "string", "enum": ["bar", "line", "scatter"]},
+                    "x": {"type": "string"},
+                    "y": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["chart_type", "x", "y"],
                 "additionalProperties": False,
             },
         },
@@ -111,33 +144,107 @@ class ToolCall:
     result: Any
 
 
-def _execute_tool(data: GemsData, name: str, args: dict) -> Any:
+def _dictionary_table(name: str) -> dict | None:
+    dictionary = _load_data_dictionary()
+    for table in dictionary.get("tables", []):
+        if table.get("name") == name:
+            return table
+    return None
+
+
+def _describe_table(data: GemsData, name: str) -> dict:
+    schema = data.get_schema(name)
+    info = _dictionary_table(name) or {}
+    sample_size = data.run_aggregate_query(
+        f"SELECT COUNT(*) AS row_count FROM `{data.cfg['catalog']}`.`{data.cfg['schema']}`.`{name}`"
+    )
+    columns = []
+    null_parts = [
+        f"AVG(CASE WHEN `{col['name']}` IS NULL THEN 1 ELSE 0 END) AS `{col['name']}__null_pct`"
+        for col in schema[:80]
+    ]
+    null_result = {}
+    if null_parts:
+        null_query = (
+            "SELECT "
+            + ", ".join(null_parts)
+            + f" FROM `{data.cfg['catalog']}`.`{data.cfg['schema']}`.`{name}`"
+        )
+        null_result = data.run_aggregate_query(null_query)
+    null_row = (null_result.get("rows") or [{}])[0] if isinstance(null_result, dict) else {}
+    dict_cols = {col.get("name"): col for col in info.get("columns", [])}
+    for col in schema:
+        meta = dict_cols.get(col["name"], {})
+        null_pct = null_row.get(f"{col['name']}__null_pct")
+        columns.append(
+            {
+                "name": col["name"],
+                "dtype": col["type"],
+                "description": meta.get("description", ""),
+                "unit": meta.get("unit", ""),
+                "null_pct": null_pct,
+            }
+        )
+    row_count = None
+    if isinstance(sample_size, dict) and sample_size.get("rows"):
+        row_count = sample_size["rows"][0].get("row_count")
+    return {
+        "name": name,
+        "description": info.get("description", ""),
+        "sample_size": row_count,
+        "columns": columns,
+    }
+
+
+def _execute_tool(data: GemsData, name: str, args: dict, state: dict) -> Any:
     try:
         if name == "list_tables":
-            return {"tables": data.list_tables()}
-        if name == "get_schema":
-            table = args.get("table", "")
+            dictionary = _load_data_dictionary()
+            descriptions = {
+                table.get("name"): table.get("description", "")
+                for table in dictionary.get("tables", [])
+            }
+            return [
+                {"name": table, "label": display_name(table), "description": descriptions.get(table, "")}
+                for table in data.list_tables()
+            ]
+        if name == "describe_table":
+            table = args.get("name", "")
             if not table:
-                return {"error": True, "message": "Missing 'table' argument"}
-            return {"table": table, "columns": data.get_schema(table)}
-        if name == "run_sql":
+                return {"error": True, "message": "Missing 'name' argument"}
+            return _describe_table(data, table)
+        if name == "run_aggregate_query":
             sql = args.get("sql", "")
-            limit = int(args.get("limit", 1000) or 1000)
-            return data.run_sql(sql, limit=limit)
+            limit = int(args.get("limit", 50) or 50)
+            result = data.run_aggregate_query(sql, limit=limit)
+            if not result.get("error"):
+                state["last_result"] = result
+            return result
+        if name == "plot":
+            spec = {
+                "chart_type": args.get("chart_type", "bar"),
+                "x": args.get("x", ""),
+                "y": args.get("y", ""),
+                "title": args.get("title", ""),
+                "source": "last_aggregate_result",
+            }
+            state["last_plot"] = spec
+            return {"plot_spec": spec}
         return {"error": True, "message": f"Unknown tool: {name}"}
     except Exception as e:
         return {"error": True, "message": str(e)}
 
 
 def _trim_tool_result_for_llm(result: Any, max_chars: int = 30_000) -> str:
-    """Serialize a tool result for the LLM, trimming if it's absurdly large."""
     try:
-        s = json.dumps(result, default=str)
+        payload = json.dumps(result, default=str)
     except Exception:
-        s = str(result)
-    if len(s) > max_chars:
-        return s[:max_chars] + f'...","_truncated":true,"_original_chars":{len(s)}}}'
-    return s
+        payload = str(result)
+    if os.environ.get("GEMS_CHAT_DEBUG_LLM_PAYLOADS", "").lower() in {"1", "true", "yes"}:
+        print(f"[CHAT_DEBUG] outbound tool payload to LLM: {payload[:max_chars]}")
+    if len(payload) > max_chars:
+        return payload[:max_chars] + f'...","_truncated":true,"_original_chars":{len(payload)}}}'
+    return payload
 
 
 def run_agent(
@@ -147,29 +254,18 @@ def run_agent(
     model: str | None = None,
     max_iters: int = 8,
 ) -> dict:
-    """Run one user turn of the agent.
+    client = get_llm_client()
+    model_name = model or get_llm_model()
 
-    `history` is a list of {"role": "user"|"assistant", "content": str} from prior
-    turns (tool calls are NOT persisted across turns; the LLM re-derives them as
-    needed from its own textual answers).
-
-    Returns {"answer": str, "tool_calls": [ToolCall, ...]}.
-    """
-    from openai import OpenAI
-
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    client = OpenAI(api_key=key)
-    model_name = model or os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o")
-
-    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    messages: list[dict] = [
+        {"role": "system", "content": _SYSTEM_PROMPT + _dictionary_prompt()}
+    ]
     for turn in history:
         messages.append({"role": turn["role"], "content": turn.get("content", "")})
     messages.append({"role": "user", "content": user_message})
 
     tool_calls_log: list[ToolCall] = []
+    state: dict = {}
 
     for _ in range(max_iters):
         resp = client.chat.completions.create(
@@ -181,7 +277,11 @@ def run_agent(
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
-            return {"answer": (msg.content or "").strip(), "tool_calls": tool_calls_log}
+            return {
+                "answer": (msg.content or "").strip(),
+                "tool_calls": tool_calls_log,
+                "plot_spec": state.get("last_plot"),
+            }
 
         messages.append(
             {
@@ -206,10 +306,8 @@ def run_agent(
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _execute_tool(data, tc.function.name, args)
-            tool_calls_log.append(
-                ToolCall(name=tc.function.name, arguments=args, result=result)
-            )
+            result = _execute_tool(data, tc.function.name, args, state)
+            tool_calls_log.append(ToolCall(name=tc.function.name, arguments=args, result=result))
             messages.append(
                 {
                     "role": "tool",
@@ -219,10 +317,7 @@ def run_agent(
             )
 
     return {
-        "answer": (
-            "I reached the maximum number of tool calls without producing a final "
-            "answer. Please try a more specific question, or narrow the table/"
-            "columns you're asking about."
-        ),
+        "answer": "I reached the maximum number of tool calls. Please try a more specific aggregate question.",
         "tool_calls": tool_calls_log,
+        "plot_spec": state.get("last_plot"),
     }

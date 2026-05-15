@@ -11,7 +11,7 @@ For a detailed project history and issue log, see `dashboard/note.md`.
 - **Frontend/runtime:** Streamlit (`app.py` + `page_*.py`)
 - **Auth:** Auth0 through Azure App Service Easy Auth
 - **Data:** Databricks SQL warehouse (`gems_catalog.gold_v1`)
-- **AI:** OpenAI (plot/model interpretation + chat)
+- **AI:** Databricks-hosted LLM endpoint (plot/model interpretation + chat)
 - **API keys:** Azure Table Storage hashed per-user key records
 
 ## Main Files
@@ -20,6 +20,7 @@ For a detailed project history and issue log, see `dashboard/note.md`.
 - `page_explore.py`: data browsing, joins, charts, chart interpretation.
 - `page_modeling.py`: OLS/MixedLM workflows and interpretation.
 - `page_chat.py`: chat over data with SQL safety checks.
+- `resources/data_dictionary.json`: editable table/column dictionary used by chat.
 - `page_api_access.py`: API-key creation/revocation and Python/R examples.
 - `gems_api_keys.py`: API-key generation, hashing, and Azure Table Storage records.
 - `gems_data.py`: Databricks query/access layer.
@@ -36,7 +37,7 @@ copy .env.example .env
 ```
 
 Edit `.env` with real values (minimum: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`,
-`DATABRICKS_TOKEN`, `ALLOWED_TABLES`, `OPENAI_API_KEY`).
+`DATABRICKS_TOKEN`, `DATABRICKS_LLM_ENDPOINT`, `ALLOWED_TABLES`).
 
 Then run:
 
@@ -56,16 +57,19 @@ Open `http://localhost:8501`.
 3. Configure App Settings (Environment variables):
    - Databricks: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`
    - Dataset scope: `GEMS_CATALOG`, `GEMS_SCHEMA`, `ALLOWED_TABLES`
-   - AI: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_CHAT_MODEL`
+   - AI: `DATABRICKS_LLM_ENDPOINT`
    - API access: `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, `API_KEY_PEPPER`, `GEMS_API_BASE_URL`
    - Data access gate: `ALLOWED_USERS` and/or `ALLOWED_DOMAINS`
+   - Optional Auth0 verification resend: `AUTH0_DOMAIN` plus either `AUTH0_MANAGEMENT_API_TOKEN` or both `AUTH0_MANAGEMENT_CLIENT_ID` and `AUTH0_MANAGEMENT_CLIENT_SECRET`. The Management API application needs permission to create verification email jobs (`create:user_tickets` / verification email job access in Auth0 Management API). If these are omitted, the dashboard shows a friendly message and asks users to use the original Auth0 verification email or contact an administrator.
 
 ## Access Control Model (Current)
 
 - Easy Auth controls who can sign in.
-- In-app allowlist controls who can access data pages.
+- `gems-dashboard.ALLOWED_USERS` controls dashboard data-page access.
+- `GEMS-API.ALLOWED_USERS` controls API-tier data access and must be a subset of `gems-dashboard.ALLOWED_USERS`.
 - Home page remains visible to signed-in users.
-- Explore/Modeling/Chat/API Access call `require_authorized_user()`.
+- Anyone added to `GEMS-API.ALLOWED_USERS` must also be added to `gems-dashboard.ALLOWED_USERS`.
+- Explore/Modeling/Chat call `require_authorized_user()`; API Access also checks API-tier access through `GEMS-API /authz/me`.
 
 `ALLOWED_USERS` example:
 
@@ -73,8 +77,7 @@ Open `http://localhost:8501`.
 puchun.niu@cornell.edu,collaborator@cornell.edu
 ```
 
-If `ALLOWED_USERS` and `ALLOWED_DOMAINS` are both blank, data pages are open to
-any signed-in user.
+Only verified emails in `ALLOWED_USERS` receive dashboard data access.
 
 ## Deploy to Azure
 

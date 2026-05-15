@@ -417,10 +417,8 @@ Web App -> Settings -> Environment variables -> App settings:
   - `GEMS_CATALOG`
   - `GEMS_SCHEMA`
   - `ALLOWED_TABLES`
-- OpenAI:
-  - `OPENAI_API_KEY`
-  - `OPENAI_MODEL`
-  - `OPENAI_CHAT_MODEL`
+- Databricks-hosted LLM:
+  - `DATABRICKS_LLM_ENDPOINT`
 - API access:
   - `AZURE_TABLES_CONNECTION_STRING`
   - `AZURE_API_KEYS_TABLE=gemsApiKeys`

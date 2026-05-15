@@ -1,6 +1,6 @@
 """Chat page — ask questions about the gold tables in natural language.
 
-Uses OpenAI tool-calling. The LLM can list tables, inspect schemas, and run
+Uses LLM tool-calling. The LLM can list tables, inspect schemas, and run
 SELECT queries through the standalone data layer. Every SQL call is validated
 client-side (SELECT-only, allowlisted tables, no DDL/DML). Internal workflow
 columns are stripped from every schema and result returned to the model.
@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -58,17 +59,17 @@ except Exception as e:
 def _render_tool_calls(tool_calls: list) -> None:
     if not tool_calls:
         return
-    with st.expander(f"Tool calls ({len(tool_calls)})"):
+    with st.expander("Show query"):
         for i, tc in enumerate(tool_calls, start=1):
             name = tc["name"] if isinstance(tc, dict) else tc.name
             args = tc["arguments"] if isinstance(tc, dict) else tc.arguments
             result = tc["result"] if isinstance(tc, dict) else tc.result
 
             st.markdown(f"**{i}. `{name}`**")
-            if args:
+            if args and "sql" in args:
                 st.code(
-                    args.get("sql") if name == "run_sql" and "sql" in args else str(args),
-                    language="sql" if name == "run_sql" else "json",
+                    args.get("sql"),
+                    language="sql",
                 )
 
             if isinstance(result, dict) and result.get("error"):
@@ -95,10 +96,39 @@ def _render_tool_calls(tool_calls: list) -> None:
                 st.json(result if isinstance(result, dict) else {"value": str(result)})
 
 
+def _render_plot(plot_spec: dict | None, tool_calls: list) -> None:
+    if not plot_spec:
+        return
+    last_result = None
+    for tc in reversed(tool_calls):
+        name = tc["name"] if isinstance(tc, dict) else tc.name
+        result = tc["result"] if isinstance(tc, dict) else tc.result
+        if name == "run_aggregate_query" and isinstance(result, dict) and result.get("rows"):
+            last_result = result
+            break
+    if not last_result:
+        return
+    df = pd.DataFrame(last_result["rows"])
+    x = plot_spec.get("x")
+    y = plot_spec.get("y")
+    if x not in df.columns or y not in df.columns:
+        return
+    chart_type = plot_spec.get("chart_type", "bar")
+    title = plot_spec.get("title") or None
+    if chart_type == "line":
+        fig = px.line(df, x=x, y=y, title=title)
+    elif chart_type == "scatter":
+        fig = px.scatter(df, x=x, y=y, title=title)
+    else:
+        fig = px.bar(df, x=x, y=y, title=title)
+    st.plotly_chart(fig, use_container_width=True)
+
+
 for turn in st.session_state.chat_history:
     with st.chat_message(turn["role"]):
         st.markdown(turn["content"])
         if turn["role"] == "assistant":
+            _render_plot(turn.get("plot_spec"), turn.get("tool_calls", []))
             _render_tool_calls(turn.get("tool_calls", []))
 
 
@@ -109,23 +139,26 @@ if user_msg:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            openai_history = [
+            llm_history = [
                 {"role": t["role"], "content": t["content"]}
                 for t in st.session_state.chat_history
             ]
             try:
-                result = run_agent(user_msg, openai_history, data)
+                result = run_agent(user_msg, llm_history, data)
                 answer = result["answer"]
                 tool_calls = result["tool_calls"]
+                plot_spec = result.get("plot_spec")
             except Exception as e:
                 answer = f"Error: {e}"
                 tool_calls = []
+                plot_spec = None
 
         st.markdown(answer or "_(no answer)_")
         tc_serialized = [
             {"name": tc.name, "arguments": tc.arguments, "result": tc.result}
             for tc in tool_calls
         ]
+        _render_plot(plot_spec, tc_serialized)
         _render_tool_calls(tc_serialized)
 
     st.session_state.chat_history.append({"role": "user", "content": user_msg})
@@ -134,5 +167,6 @@ if user_msg:
             "role": "assistant",
             "content": answer,
             "tool_calls": tc_serialized,
+            "plot_spec": plot_spec,
         }
     )

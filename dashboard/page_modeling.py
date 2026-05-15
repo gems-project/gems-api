@@ -41,7 +41,7 @@ from gems_stats import (  # noqa: E402
     fit_ols,
     summary_dict,
 )
-from gems_ui import page_header, sidebar_user  # noqa: E402
+from gems_ui import page_header, render_ai_card, sidebar_user  # noqa: E402
 
 
 def _fmt(v, as_int: bool = False, sig: bool = False) -> str:
@@ -619,6 +619,6 @@ if summary and spec:
         )
         with st.spinner("Asking AI..."):
             try:
-                st.markdown(interpret_model(context))
+                render_ai_card(interpret_model(context))
             except Exception as e:
                 st.error(f"AI call failed: {e}")

@@ -1,0 +1,2560 @@
+{
+  "tables": [
+    {
+      "name": "goldanimalcharacteristics",
+      "description": "Auto-generated draft for animalcharacteristics. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "RadioFrequencyIdentification",
+          "dtype": "string",
+          "description": "TODO: describe RadioFrequencyIdentification.",
+          "unit": ""
+        },
+        {
+          "name": "Breed",
+          "dtype": "string",
+          "description": "TODO: describe Breed.",
+          "unit": ""
+        },
+        {
+          "name": "ProductionType",
+          "dtype": "string",
+          "description": "TODO: describe ProductionType.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalType",
+          "dtype": "string",
+          "description": "TODO: describe AnimalType.",
+          "unit": ""
+        },
+        {
+          "name": "BirthDate",
+          "dtype": "string",
+          "description": "TODO: describe BirthDate.",
+          "unit": ""
+        },
+        {
+          "name": "Age",
+          "dtype": "string",
+          "description": "TODO: describe Age.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalStatus",
+          "dtype": "string",
+          "description": "TODO: describe AnimalStatus.",
+          "unit": ""
+        },
+        {
+          "name": "Parity",
+          "dtype": "string",
+          "description": "TODO: describe Parity.",
+          "unit": ""
+        },
+        {
+          "name": "DaysInMilk",
+          "dtype": "string",
+          "description": "TODO: describe DaysInMilk.",
+          "unit": ""
+        },
+        {
+          "name": "Cannulation",
+          "dtype": "string",
+          "description": "TODO: describe Cannulation.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldbodyweight",
+      "description": "Auto-generated draft for bodyweight. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "BodyWeight",
+          "dtype": "string",
+          "description": "TODO: describe BodyWeight.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldcontributor",
+      "description": "Auto-generated draft for contributor. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "Name",
+          "dtype": "string",
+          "description": "TODO: describe Name.",
+          "unit": ""
+        },
+        {
+          "name": "Affiliation",
+          "dtype": "string",
+          "description": "TODO: describe Affiliation.",
+          "unit": ""
+        },
+        {
+          "name": "Email",
+          "dtype": "string",
+          "description": "TODO: describe Email.",
+          "unit": ""
+        },
+        {
+          "name": "Role",
+          "dtype": "string",
+          "description": "TODO: describe Role.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "golddietnutrientcomposition",
+      "description": "Auto-generated draft for dietnutrientcomposition. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "Treatment",
+          "dtype": "string",
+          "description": "TODO: describe Treatment.",
+          "unit": ""
+        },
+        {
+          "name": "ProportionForage",
+          "dtype": "string",
+          "description": "TODO: describe ProportionForage.",
+          "unit": ""
+        },
+        {
+          "name": "ProportionConcentrate",
+          "dtype": "string",
+          "description": "TODO: describe ProportionConcentrate.",
+          "unit": ""
+        },
+        {
+          "name": "OrganicMatter",
+          "dtype": "string",
+          "description": "TODO: describe OrganicMatter.",
+          "unit": ""
+        },
+        {
+          "name": "CrudeProtein",
+          "dtype": "string",
+          "description": "TODO: describe CrudeProtein.",
+          "unit": ""
+        },
+        {
+          "name": "EtherExtract",
+          "dtype": "string",
+          "description": "TODO: describe EtherExtract.",
+          "unit": ""
+        },
+        {
+          "name": "NeutralDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe NeutralDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "AcidDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe AcidDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "Lignin",
+          "dtype": "string",
+          "description": "TODO: describe Lignin.",
+          "unit": ""
+        },
+        {
+          "name": "Starch",
+          "dtype": "string",
+          "description": "TODO: describe Starch.",
+          "unit": ""
+        },
+        {
+          "name": "GrossEnergy",
+          "dtype": "string",
+          "description": "TODO: describe GrossEnergy.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "NeutralDetergentFiberOrganicMatter",
+          "dtype": "string",
+          "description": "TODO: describe NeutralDetergentFiberOrganicMatter.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "golddigestibility",
+      "description": "Auto-generated draft for digestibility. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "Treatment",
+          "dtype": "string",
+          "description": "TODO: describe Treatment.",
+          "unit": ""
+        },
+        {
+          "name": "GrossEnergyDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe GrossEnergyDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "MetabolizableEnergyDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe MetabolizableEnergyDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "DryMatterDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe DryMatterDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "OrganicMatterDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe OrganicMatterDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "CrudeProteinDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe CrudeProteinDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "EtherExtractDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe EtherExtractDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "NeutralDetergentFiberDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe NeutralDetergentFiberDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "AcidDetergentFiberDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe AcidDetergentFiberDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "StarchDigestibility",
+          "dtype": "string",
+          "description": "TODO: describe StarchDigestibility.",
+          "unit": ""
+        },
+        {
+          "name": "FecalEnergy",
+          "dtype": "string",
+          "description": "TODO: describe FecalEnergy.",
+          "unit": ""
+        },
+        {
+          "name": "FecalNitrogen",
+          "dtype": "string",
+          "description": "TODO: describe FecalNitrogen.",
+          "unit": ""
+        },
+        {
+          "name": "UrineNitrogen",
+          "dtype": "string",
+          "description": "TODO: describe UrineNitrogen.",
+          "unit": ""
+        },
+        {
+          "name": "UrineCarbon",
+          "dtype": "string",
+          "description": "TODO: describe UrineCarbon.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldexperimentaldesign",
+      "description": "Auto-generated draft for experimentaldesign. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "Period",
+          "dtype": "string",
+          "description": "TODO: describe Period.",
+          "unit": ""
+        },
+        {
+          "name": "ExperimentalPhase",
+          "dtype": "string",
+          "description": "TODO: describe ExperimentalPhase.",
+          "unit": ""
+        },
+        {
+          "name": "ExperimentalDesign",
+          "dtype": "string",
+          "description": "TODO: describe ExperimentalDesign.",
+          "unit": ""
+        },
+        {
+          "name": "Treatment",
+          "dtype": "string",
+          "description": "TODO: describe Treatment.",
+          "unit": ""
+        },
+        {
+          "name": "MethaneInhibitingFeedAdditive",
+          "dtype": "string",
+          "description": "TODO: describe MethaneInhibitingFeedAdditive.",
+          "unit": ""
+        },
+        {
+          "name": "MethaneInhibitingFeedAdditiveDose",
+          "dtype": "string",
+          "description": "TODO: describe MethaneInhibitingFeedAdditiveDose.",
+          "unit": ""
+        },
+        {
+          "name": "ApplicationOfFeedAdditive",
+          "dtype": "string",
+          "description": "TODO: describe ApplicationOfFeedAdditive.",
+          "unit": ""
+        },
+        {
+          "name": "Housing",
+          "dtype": "string",
+          "description": "TODO: describe Housing.",
+          "unit": ""
+        },
+        {
+          "name": "FeedRegimen",
+          "dtype": "string",
+          "description": "TODO: describe FeedRegimen.",
+          "unit": ""
+        },
+        {
+          "name": "Feeding",
+          "dtype": "string",
+          "description": "TODO: describe Feeding.",
+          "unit": ""
+        },
+        {
+          "name": "ExperimentalLocation",
+          "dtype": "string",
+          "description": "TODO: describe ExperimentalLocation.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldfeedcomponents",
+      "description": "Auto-generated draft for feedcomponents. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "Treatment",
+          "dtype": "string",
+          "description": "TODO: describe Treatment.",
+          "unit": ""
+        },
+        {
+          "name": "Ingredients",
+          "dtype": "string",
+          "description": "TODO: describe Ingredients.",
+          "unit": ""
+        },
+        {
+          "name": "Proportion",
+          "dtype": "string",
+          "description": "TODO: describe Proportion.",
+          "unit": ""
+        },
+        {
+          "name": "OrganicMatter",
+          "dtype": "string",
+          "description": "TODO: describe OrganicMatter.",
+          "unit": ""
+        },
+        {
+          "name": "CrudeProtein",
+          "dtype": "string",
+          "description": "TODO: describe CrudeProtein.",
+          "unit": ""
+        },
+        {
+          "name": "EtherExtract",
+          "dtype": "string",
+          "description": "TODO: describe EtherExtract.",
+          "unit": ""
+        },
+        {
+          "name": "NeutralDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe NeutralDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "AcidDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe AcidDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "Lignin",
+          "dtype": "string",
+          "description": "TODO: describe Lignin.",
+          "unit": ""
+        },
+        {
+          "name": "Starch",
+          "dtype": "string",
+          "description": "TODO: describe Starch.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "AmylaseNeutralDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe AmylaseNeutralDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldgreenfeedcalibration",
+      "description": "Auto-generated draft for greenfeedcalibration. TODO: add business description.",
+      "columns": [
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "GreenFeedUnitIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe GreenFeedUnitIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "CalibrationDate",
+          "dtype": "string",
+          "description": "TODO: describe CalibrationDate.",
+          "unit": ""
+        },
+        {
+          "name": "CalibrationTime",
+          "dtype": "string",
+          "description": "TODO: describe CalibrationTime.",
+          "unit": ""
+        },
+        {
+          "name": "CalibrationGas",
+          "dtype": "string",
+          "description": "TODO: describe CalibrationGas.",
+          "unit": ""
+        },
+        {
+          "name": "CalibrationValue",
+          "dtype": "string",
+          "description": "TODO: describe CalibrationValue.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "bigint",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldgreenfeeddatafilereference",
+      "description": "Auto-generated draft for greenfeeddatafilereference. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "GreenFeedFileNameForSummarizedData",
+          "dtype": "string",
+          "description": "TODO: describe GreenFeedFileNameForSummarizedData.",
+          "unit": ""
+        },
+        {
+          "name": "GreenFeedFileNameForPreliminaryData",
+          "dtype": "string",
+          "description": "TODO: describe GreenFeedFileNameForPreliminaryData.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldgreenfeedpelletcomponents",
+      "description": "Auto-generated draft for greenfeedpelletcomponents. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "GreenFeedBaitIngredients",
+          "dtype": "string",
+          "description": "TODO: describe GreenFeedBaitIngredients.",
+          "unit": ""
+        },
+        {
+          "name": "Proportion",
+          "dtype": "string",
+          "description": "TODO: describe Proportion.",
+          "unit": ""
+        },
+        {
+          "name": "OrganicMatter",
+          "dtype": "string",
+          "description": "TODO: describe OrganicMatter.",
+          "unit": ""
+        },
+        {
+          "name": "CrudeProtein",
+          "dtype": "string",
+          "description": "TODO: describe CrudeProtein.",
+          "unit": ""
+        },
+        {
+          "name": "EtherExtract",
+          "dtype": "string",
+          "description": "TODO: describe EtherExtract.",
+          "unit": ""
+        },
+        {
+          "name": "NeutralDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe NeutralDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "AcidDetergentFiber",
+          "dtype": "string",
+          "description": "TODO: describe AcidDetergentFiber.",
+          "unit": ""
+        },
+        {
+          "name": "Starch",
+          "dtype": "string",
+          "description": "TODO: describe Starch.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldgreenfeedrawvisitationdata",
+      "description": "Auto-generated draft for greenfeedrawvisitationdata. TODO: add business description.",
+      "columns": [
+        {
+          "name": "RFID",
+          "dtype": "string",
+          "description": "TODO: describe RFID.",
+          "unit": ""
+        },
+        {
+          "name": "Farm_Name",
+          "dtype": "string",
+          "description": "TODO: describe Farm_Name.",
+          "unit": ""
+        },
+        {
+          "name": "FID",
+          "dtype": "string",
+          "description": "TODO: describe FID.",
+          "unit": ""
+        },
+        {
+          "name": "Start_Time",
+          "dtype": "string",
+          "description": "TODO: describe Start_Time.",
+          "unit": ""
+        },
+        {
+          "name": "End_Time",
+          "dtype": "string",
+          "description": "TODO: describe End_Time.",
+          "unit": ""
+        },
+        {
+          "name": "Good_Data_Duration",
+          "dtype": "string",
+          "description": "TODO: describe Good_Data_Duration.",
+          "unit": ""
+        },
+        {
+          "name": "Hour_Of_Day",
+          "dtype": "string",
+          "description": "TODO: describe Hour_Of_Day.",
+          "unit": ""
+        },
+        {
+          "name": "CO2_Massflow_g_d",
+          "dtype": "string",
+          "description": "TODO: describe CO2_Massflow_g_d.",
+          "unit": ""
+        },
+        {
+          "name": "CH4_Massflow_g_d",
+          "dtype": "string",
+          "description": "TODO: describe CH4_Massflow_g_d.",
+          "unit": ""
+        },
+        {
+          "name": "O2_Massflow_g_d",
+          "dtype": "string",
+          "description": "TODO: describe O2_Massflow_g_d.",
+          "unit": ""
+        },
+        {
+          "name": "H2_Massflow_g_d",
+          "dtype": "string",
+          "description": "TODO: describe H2_Massflow_g_d.",
+          "unit": ""
+        },
+        {
+          "name": "H2S_Massflow_g_d",
+          "dtype": "string",
+          "description": "TODO: describe H2S_Massflow_g_d.",
+          "unit": ""
+        },
+        {
+          "name": "Average_Airflow_L_s",
+          "dtype": "string",
+          "description": "TODO: describe Average_Airflow_L_s.",
+          "unit": ""
+        },
+        {
+          "name": "Airflow_CF",
+          "dtype": "string",
+          "description": "TODO: describe Airflow_CF.",
+          "unit": ""
+        },
+        {
+          "name": "Average_Wind_Speed_m_s",
+          "dtype": "string",
+          "description": "TODO: describe Average_Wind_Speed_m_s.",
+          "unit": ""
+        },
+        {
+          "name": "Average_Wind_Direction_deg",
+          "dtype": "string",
+          "description": "TODO: describe Average_Wind_Direction_deg.",
+          "unit": ""
+        },
+        {
+          "name": "Wind_CF",
+          "dtype": "string",
+          "description": "TODO: describe Wind_CF.",
+          "unit": ""
+        },
+        {
+          "name": "Was_Interrupted",
+          "dtype": "string",
+          "description": "TODO: describe Was_Interrupted.",
+          "unit": ""
+        },
+        {
+          "name": "Interrupting_Tags",
+          "dtype": "string",
+          "description": "TODO: describe Interrupting_Tags.",
+          "unit": ""
+        },
+        {
+          "name": "Midpoint_Since_Last",
+          "dtype": "string",
+          "description": "TODO: describe Midpoint_Since_Last.",
+          "unit": ""
+        },
+        {
+          "name": "Midpoint_Until_Next",
+          "dtype": "string",
+          "description": "TODO: describe Midpoint_Until_Next.",
+          "unit": ""
+        },
+        {
+          "name": "Standard_Deviation_of_CH4_Baseline",
+          "dtype": "string",
+          "description": "TODO: describe Standard_Deviation_of_CH4_Baseline.",
+          "unit": ""
+        },
+        {
+          "name": "Pipe_Temperature_deg_C",
+          "dtype": "string",
+          "description": "TODO: describe Pipe_Temperature_deg_C.",
+          "unit": ""
+        },
+        {
+          "name": "Gas_Temperature_deg_C",
+          "dtype": "string",
+          "description": "TODO: describe Gas_Temperature_deg_C.",
+          "unit": ""
+        },
+        {
+          "name": "RID",
+          "dtype": "string",
+          "description": "TODO: describe RID.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "greenfeedSourceFile",
+          "dtype": "string",
+          "description": "TODO: describe greenfeedSourceFile.",
+          "unit": ""
+        },
+        {
+          "name": "greenfeedReferenceName",
+          "dtype": "string",
+          "description": "TODO: describe greenfeedReferenceName.",
+          "unit": ""
+        },
+        {
+          "name": "goldRunId",
+          "dtype": "string",
+          "description": "TODO: describe goldRunId.",
+          "unit": ""
+        },
+        {
+          "name": "greenfeedIngestOrdinal",
+          "dtype": "bigint",
+          "description": "TODO: describe greenfeedIngestOrdinal.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTimestampUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTimestampUtc.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldgreenfeedsettings",
+      "description": "Auto-generated draft for greenfeedsettings. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "GreenFeedUnitIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe GreenFeedUnitIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "MaximumDropsPerVisit",
+          "dtype": "string",
+          "description": "TODO: describe MaximumDropsPerVisit.",
+          "unit": ""
+        },
+        {
+          "name": "AmountPerDrop",
+          "dtype": "string",
+          "description": "TODO: describe AmountPerDrop.",
+          "unit": ""
+        },
+        {
+          "name": "TimeBetweenDrops",
+          "dtype": "string",
+          "description": "TODO: describe TimeBetweenDrops.",
+          "unit": ""
+        },
+        {
+          "name": "TimeBetweenVisits",
+          "dtype": "string",
+          "description": "TODO: describe TimeBetweenVisits.",
+          "unit": ""
+        },
+        {
+          "name": "SharedAccessToGreenFeed",
+          "dtype": "string",
+          "description": "TODO: describe SharedAccessToGreenFeed.",
+          "unit": ""
+        },
+        {
+          "name": "DailyAccessLevel",
+          "dtype": "string",
+          "description": "TODO: describe DailyAccessLevel.",
+          "unit": ""
+        },
+        {
+          "name": "GasMeasurementLocation",
+          "dtype": "string",
+          "description": "TODO: describe GasMeasurementLocation.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldintakeintraday",
+      "description": "Auto-generated draft for intakeintraday. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "FeedingEventStart",
+          "dtype": "string",
+          "description": "TODO: describe FeedingEventStart.",
+          "unit": ""
+        },
+        {
+          "name": "FeedingEventEnd",
+          "dtype": "string",
+          "description": "TODO: describe FeedingEventEnd.",
+          "unit": ""
+        },
+        {
+          "name": "DryMatterIntake",
+          "dtype": "string",
+          "description": "TODO: describe DryMatterIntake.",
+          "unit": ""
+        },
+        {
+          "name": "ForageIntake",
+          "dtype": "string",
+          "description": "TODO: describe ForageIntake.",
+          "unit": ""
+        },
+        {
+          "name": "ConcentrateIntake",
+          "dtype": "string",
+          "description": "TODO: describe ConcentrateIntake.",
+          "unit": ""
+        },
+        {
+          "name": "GrossEnergyIntake",
+          "dtype": "string",
+          "description": "TODO: describe GrossEnergyIntake.",
+          "unit": ""
+        },
+        {
+          "name": "WaterIntake",
+          "dtype": "string",
+          "description": "TODO: describe WaterIntake.",
+          "unit": ""
+        },
+        {
+          "name": "FeedingTime",
+          "dtype": "string",
+          "description": "TODO: describe FeedingTime.",
+          "unit": ""
+        },
+        {
+          "name": "FeedIntakeMeasurementMethod",
+          "dtype": "string",
+          "description": "TODO: describe FeedIntakeMeasurementMethod.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldintakeperday",
+      "description": "Auto-generated draft for intakeperday. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "DryMatterIntake",
+          "dtype": "string",
+          "description": "TODO: describe DryMatterIntake.",
+          "unit": ""
+        },
+        {
+          "name": "ForageIntake",
+          "dtype": "string",
+          "description": "TODO: describe ForageIntake.",
+          "unit": ""
+        },
+        {
+          "name": "ConcentrateIntake",
+          "dtype": "string",
+          "description": "TODO: describe ConcentrateIntake.",
+          "unit": ""
+        },
+        {
+          "name": "GrossEnergyIntake",
+          "dtype": "string",
+          "description": "TODO: describe GrossEnergyIntake.",
+          "unit": ""
+        },
+        {
+          "name": "WaterIntake",
+          "dtype": "string",
+          "description": "TODO: describe WaterIntake.",
+          "unit": ""
+        },
+        {
+          "name": "FeedingTime",
+          "dtype": "string",
+          "description": "TODO: describe FeedingTime.",
+          "unit": ""
+        },
+        {
+          "name": "FeedIntakeMeasurementMethod",
+          "dtype": "string",
+          "description": "TODO: describe FeedIntakeMeasurementMethod.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldmilk",
+      "description": "Auto-generated draft for milk. TODO: add business description.",
+      "columns": [
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "MilkingTime",
+          "dtype": "string",
+          "description": "TODO: describe MilkingTime.",
+          "unit": ""
+        },
+        {
+          "name": "MilkProduction",
+          "dtype": "string",
+          "description": "TODO: describe MilkProduction.",
+          "unit": ""
+        },
+        {
+          "name": "MilkProtein",
+          "dtype": "string",
+          "description": "TODO: describe MilkProtein.",
+          "unit": ""
+        },
+        {
+          "name": "MilkFat",
+          "dtype": "string",
+          "description": "TODO: describe MilkFat.",
+          "unit": ""
+        },
+        {
+          "name": "MilkLactose",
+          "dtype": "string",
+          "description": "TODO: describe MilkLactose.",
+          "unit": ""
+        },
+        {
+          "name": "MilkUrea",
+          "dtype": "string",
+          "description": "TODO: describe MilkUrea.",
+          "unit": ""
+        },
+        {
+          "name": "MilkSomaticCellCount",
+          "dtype": "string",
+          "description": "TODO: describe MilkSomaticCellCount.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldqcdetails",
+      "description": "Auto-generated draft for qcdetails. TODO: add business description.",
+      "columns": [
+        {
+          "name": "qcRunId",
+          "dtype": "string",
+          "description": "TODO: describe qcRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ruleVersionUsed",
+          "dtype": "string",
+          "description": "TODO: describe ruleVersionUsed.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "columnName",
+          "dtype": "string",
+          "description": "TODO: describe columnName.",
+          "unit": ""
+        },
+        {
+          "name": "checkType",
+          "dtype": "string",
+          "description": "TODO: describe checkType.",
+          "unit": ""
+        },
+        {
+          "name": "badRowCount",
+          "dtype": "string",
+          "description": "TODO: describe badRowCount.",
+          "unit": ""
+        },
+        {
+          "name": "message",
+          "dtype": "string",
+          "description": "TODO: describe message.",
+          "unit": ""
+        },
+        {
+          "name": "createdTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe createdTsUtc.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldqcsummary",
+      "description": "Auto-generated draft for qcsummary. TODO: add business description.",
+      "columns": [
+        {
+          "name": "qcRunId",
+          "dtype": "string",
+          "description": "TODO: describe qcRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ruleVersionUsed",
+          "dtype": "string",
+          "description": "TODO: describe ruleVersionUsed.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "qcStatus",
+          "dtype": "string",
+          "description": "TODO: describe qcStatus.",
+          "unit": ""
+        },
+        {
+          "name": "qcMessage",
+          "dtype": "string",
+          "description": "TODO: describe qcMessage.",
+          "unit": ""
+        },
+        {
+          "name": "issueCount",
+          "dtype": "bigint",
+          "description": "TODO: describe issueCount.",
+          "unit": ""
+        },
+        {
+          "name": "createdTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe createdTsUtc.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldrespirationchambermeasurement",
+      "description": "Auto-generated draft for respirationchambermeasurement. TODO: add business description.",
+      "columns": [
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "AnimalIdentifier",
+          "dtype": "string",
+          "description": "TODO: describe AnimalIdentifier.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "ChamberIdentification",
+          "dtype": "string",
+          "description": "TODO: describe ChamberIdentification.",
+          "unit": ""
+        },
+        {
+          "name": "ChamberOpenning",
+          "dtype": "string",
+          "description": "TODO: describe ChamberOpenning.",
+          "unit": ""
+        },
+        {
+          "name": "TimeOfDay",
+          "dtype": "string",
+          "description": "TODO: describe TimeOfDay.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirTemperature",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirTemperature.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirRelativeHumidity",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirRelativeHumidity.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirMethane",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirMethane.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirCarbonDioxide",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirCarbonDioxide.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirOxygen",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirOxygen.",
+          "unit": ""
+        },
+        {
+          "name": "FreshAirHydrogen",
+          "dtype": "string",
+          "description": "TODO: describe FreshAirHydrogen.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirTemperature",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirTemperature.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirRelativeHumidity",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirRelativeHumidity.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirFlowrate",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirFlowrate.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirEmittedCarbonDioxide",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirEmittedCarbonDioxide.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirPressure",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirPressure.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirMethane",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirMethane.",
+          "unit": ""
+        },
+        {
+          "name": "MethaneEmission",
+          "dtype": "string",
+          "description": "TODO: describe MethaneEmission.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirCarbonDioxde",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirCarbonDioxde.",
+          "unit": ""
+        },
+        {
+          "name": "CarbonDioxideEmission",
+          "dtype": "string",
+          "description": "TODO: describe CarbonDioxideEmission.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirOxygen",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirOxygen.",
+          "unit": ""
+        },
+        {
+          "name": "OxygenConsumption",
+          "dtype": "string",
+          "description": "TODO: describe OxygenConsumption.",
+          "unit": ""
+        },
+        {
+          "name": "ExtractedAirHydrogen",
+          "dtype": "string",
+          "description": "TODO: describe ExtractedAirHydrogen.",
+          "unit": ""
+        },
+        {
+          "name": "ChamberDifferentialPressure",
+          "dtype": "string",
+          "description": "TODO: describe ChamberDifferentialPressure.",
+          "unit": ""
+        },
+        {
+          "name": "FeedBinWeight",
+          "dtype": "string",
+          "description": "TODO: describe FeedBinWeight.",
+          "unit": ""
+        },
+        {
+          "name": "WaterTroughVolume",
+          "dtype": "string",
+          "description": "TODO: describe WaterTroughVolume.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "goldrespirationchambersettings",
+      "description": "Auto-generated draft for respirationchambersettings. TODO: add business description.",
+      "columns": [
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "Expression",
+          "dtype": "string",
+          "description": "TODO: describe Expression.",
+          "unit": ""
+        },
+        {
+          "name": "Date",
+          "dtype": "string",
+          "description": "TODO: describe Date.",
+          "unit": ""
+        },
+        {
+          "name": "ChamberIdentification",
+          "dtype": "string",
+          "description": "TODO: describe ChamberIdentification.",
+          "unit": ""
+        },
+        {
+          "name": "MethaneRecoveryRate",
+          "dtype": "string",
+          "description": "TODO: describe MethaneRecoveryRate.",
+          "unit": ""
+        },
+        {
+          "name": "CarbonDioxideRecoveryRate",
+          "dtype": "string",
+          "description": "TODO: describe CarbonDioxideRecoveryRate.",
+          "unit": ""
+        },
+        {
+          "name": "OxygenRecoveryRate",
+          "dtype": "string",
+          "description": "TODO: describe OxygenRecoveryRate.",
+          "unit": ""
+        },
+        {
+          "name": "contractName",
+          "dtype": "string",
+          "description": "TODO: describe contractName.",
+          "unit": ""
+        },
+        {
+          "name": "workbookFile",
+          "dtype": "string",
+          "description": "TODO: describe workbookFile.",
+          "unit": ""
+        },
+        {
+          "name": "workbookPath",
+          "dtype": "string",
+          "description": "TODO: describe workbookPath.",
+          "unit": ""
+        },
+        {
+          "name": "sourceSheet",
+          "dtype": "string",
+          "description": "TODO: describe sourceSheet.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestRunId",
+          "dtype": "string",
+          "description": "TODO: describe ingestRunId.",
+          "unit": ""
+        },
+        {
+          "name": "ingestTsUtc",
+          "dtype": "timestamp",
+          "description": "TODO: describe ingestTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "excelSourceRow",
+          "dtype": "string",
+          "description": "TODO: describe excelSourceRow.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "opsgoldbuildlog",
+      "description": "Auto-generated draft for opsgoldbuildlog. TODO: add business description.",
+      "columns": [
+        {
+          "name": "goldRunId",
+          "dtype": "string",
+          "description": "TODO: describe goldRunId.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "silverTable",
+          "dtype": "string",
+          "description": "TODO: describe silverTable.",
+          "unit": ""
+        },
+        {
+          "name": "goldTable",
+          "dtype": "string",
+          "description": "TODO: describe goldTable.",
+          "unit": ""
+        },
+        {
+          "name": "status",
+          "dtype": "string",
+          "description": "TODO: describe status.",
+          "unit": ""
+        },
+        {
+          "name": "createdTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe createdTsUtc.",
+          "unit": ""
+        },
+        {
+          "name": "errorMessage",
+          "dtype": "string",
+          "description": "TODO: describe errorMessage.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "opsgoldcandidates",
+      "description": "Auto-generated draft for opsgoldcandidates. TODO: add business description.",
+      "columns": [
+        {
+          "name": "emailRunId",
+          "dtype": "string",
+          "description": "TODO: describe emailRunId.",
+          "unit": ""
+        },
+        {
+          "name": "gateRunId",
+          "dtype": "string",
+          "description": "TODO: describe gateRunId.",
+          "unit": ""
+        },
+        {
+          "name": "qcRunId",
+          "dtype": "string",
+          "description": "TODO: describe qcRunId.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "promisedDataStatus",
+          "dtype": "string",
+          "description": "TODO: describe promisedDataStatus.",
+          "unit": ""
+        },
+        {
+          "name": "promisedDataMessage",
+          "dtype": "string",
+          "description": "TODO: describe promisedDataMessage.",
+          "unit": ""
+        },
+        {
+          "name": "ruleVersionUsed",
+          "dtype": "string",
+          "description": "TODO: describe ruleVersionUsed.",
+          "unit": ""
+        },
+        {
+          "name": "createdTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe createdTsUtc.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "name": "opsgoldstudies",
+      "description": "Auto-generated draft for opsgoldstudies. TODO: add business description.",
+      "columns": [
+        {
+          "name": "goldRunId",
+          "dtype": "string",
+          "description": "TODO: describe goldRunId.",
+          "unit": ""
+        },
+        {
+          "name": "studyId",
+          "dtype": "string",
+          "description": "TODO: describe studyId.",
+          "unit": ""
+        },
+        {
+          "name": "sequence",
+          "dtype": "string",
+          "description": "TODO: describe sequence.",
+          "unit": ""
+        },
+        {
+          "name": "silverRunId",
+          "dtype": "string",
+          "description": "TODO: describe silverRunId.",
+          "unit": ""
+        },
+        {
+          "name": "createdTsUtc",
+          "dtype": "string",
+          "description": "TODO: describe createdTsUtc.",
+          "unit": ""
+        }
+      ]
+    }
+  ]
+}

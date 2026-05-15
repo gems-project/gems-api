@@ -28,6 +28,9 @@ from decimal import Decimal
 import pandas as pd
 import streamlit as st
 
+from chat_sql import SQLValidationError, validate_aggregate_query
+from utils import prettify_table_name
+
 _IDENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _SINCE_VALUE_RE = re.compile(r"^[0-9A-Za-z\-:.+ ]{1,64}$")
 _FORBIDDEN_SQL = re.compile(
@@ -294,10 +297,8 @@ def watermark_candidates(cols: list[dict]) -> list[dict]:
 
 
 def display_name(internal: str) -> str:
-    """Strip the 'gold' prefix for UI presentation."""
-    if not internal:
-        return internal
-    return internal[4:] if internal.lower().startswith("gold") else internal
+    """Return a human-readable table label for UI presentation."""
+    return prettify_table_name(internal)
 
 
 def internal_name(display: str, allowed: frozenset[str]) -> str:
@@ -476,6 +477,44 @@ class GemsData:
                     [col[0] for col in cur.description] if cur.description else []
                 )
         except DataError as e:
+            return {"error": True, "message": str(e)}
+        except Exception as e:
+            return {"error": True, "message": f"Query failed: {e}"}
+
+        keep_idx = [i for i, name in enumerate(columns) if name not in REDACTED_COLUMNS]
+        kept_cols = [columns[i] for i in keep_idx]
+        data = [
+            {kept_cols[j]: _json_safe(r[keep_idx[j]]) for j in range(len(keep_idx))}
+            for r in rows
+        ]
+        return {
+            "columns": kept_cols,
+            "rows": data,
+            "row_count": len(data),
+            "limit_applied": lim,
+            "truncated": len(data) >= lim,
+        }
+
+    def run_aggregate_query(self, sql: str, limit: int = 50) -> dict:
+        """Validated aggregate/small-preview query for the Chat agent."""
+        c = self.cfg
+        try:
+            safe = validate_aggregate_query(
+                sql,
+                c["allowed"],
+                c["catalog"],
+                c["schema"],
+                REDACTED_COLUMNS,
+            )
+            lim = max(1, min(int(limit or 50), 50))
+            wrapped = f"SELECT * FROM ({safe}) AS __gems_q LIMIT {lim}"
+            with _connect() as conn, conn.cursor() as cur:
+                cur.execute(wrapped)
+                rows = cur.fetchall()
+                columns = (
+                    [col[0] for col in cur.description] if cur.description else []
+                )
+        except (DataError, SQLValidationError) as e:
             return {"error": True, "message": str(e)}
         except Exception as e:
             return {"error": True, "message": f"Query failed: {e}"}

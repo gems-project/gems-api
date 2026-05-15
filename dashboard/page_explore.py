@@ -36,7 +36,7 @@ from gems_data import (  # noqa: E402
     _coerce_numeric,
     display_name,
 )
-from gems_ui import page_header, sidebar_user  # noqa: E402
+from gems_ui import page_header, render_ai_card, sidebar_user  # noqa: E402
 
 st.set_page_config(page_title="Explore · GEMS", layout="wide", page_icon="🔎")
 page_header(
@@ -555,7 +555,7 @@ if fig_dict:
         pass
 if ctx:
     st.markdown("#### AI interpretation")
-    st.caption("Only summary statistics are sent to OpenAI — never raw rows.")
+    st.caption("Only summary statistics are sent to the lab LLM endpoint — never raw rows.")
     if st.button("Interpret this chart"):
         prompt = (
             f"Tables: {ctx['tables']}\n"
@@ -568,6 +568,6 @@ if ctx:
         )
         with st.spinner("Asking AI..."):
             try:
-                st.markdown(interpret_plot(prompt))
+                render_ai_card(interpret_plot(prompt))
             except Exception as e:
                 st.error(f"AI call failed: {e}")

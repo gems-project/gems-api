@@ -7,3 +7,7 @@ azure-data-tables>=12.5.0
 databricks-sql-connector>=3.0.0
 sqlglot>=23.0.0
 python-dotenv>=1.0.0
+requests>=2.31.0
+geopy>=2.4.1
+folium>=0.16.0
+streamlit-folium>=0.20.0

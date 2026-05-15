@@ -6,6 +6,7 @@ Imported by every page to give the app a consistent look.
 from __future__ import annotations
 
 import base64
+import html
 from pathlib import Path
 
 import streamlit as st
@@ -186,6 +187,44 @@ _CSS = """
   .gems-stat .v { font-size: 1.6rem; font-weight: 700; color: #1B5E20; }
   .gems-stat .l { font-size: 0.82rem; color: #5B6B61; letter-spacing: 0.02em; }
 
+  .gems-trust-row {
+    display: flex; flex-wrap: wrap; gap: 0.55rem; justify-content: center;
+    margin: 0.65rem 0 0 0;
+  }
+  .gems-trust-row span {
+    display: inline-block; background: #ECF7EF; color: #1B5E20;
+    border: 1px solid #C8E6C9; border-radius: 999px;
+    padding: 0.28rem 0.75rem; font-size: 0.82rem; font-weight: 600;
+  }
+  .gems-member-grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem; margin-top: 0.4rem;
+  }
+  @media (max-width: 760px) {
+    .gems-member-grid { grid-template-columns: 1fr; }
+  }
+  .gems-member-card {
+    background: linear-gradient(140deg, #ffffff 0%, #F4F8F5 100%);
+    border: 1px solid #E1E7E3; border-radius: 10px;
+    padding: 0.85rem 0.95rem; color: #1B5E20; font-weight: 650;
+    text-align: center; min-height: 3.2rem; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .gems-ai-card {
+    background: linear-gradient(140deg, #FAFCFB 0%, #F2F8F4 100%);
+    border: 1px solid #D6E6DA;
+    border-left: 5px solid #2E7D32;
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+    margin-top: 0.75rem;
+    color: #243027;
+  }
+  .gems-ai-card .gems-ai-title {
+    font-weight: 700;
+    color: #1B5E20;
+    margin-bottom: 0.35rem;
+  }
+
   section[data-testid="stSidebar"] {
     background: #F7FAF8; border-right: 1px solid #E1E7E3;
   }
@@ -215,6 +254,15 @@ def apply_theme() -> None:
 def render_html(html: str) -> None:
     """Render raw HTML through markdown with unsafe HTML enabled."""
     st.markdown(html, unsafe_allow_html=True)
+
+
+def render_ai_card(markdown_text: str, title: str = "AI interpretation", icon: str = "🧠") -> None:
+    st.markdown(
+        f'<div class="gems-ai-card"><div class="gems-ai-title">{icon} {html.escape(title)}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(markdown_text)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def page_header(title: str, subtitle: str | None = None) -> None:

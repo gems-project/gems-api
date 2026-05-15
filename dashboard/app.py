@@ -1,4 +1,5 @@
-"""GEMS Dashboard — landing page and navigation.
+# -*- coding: utf-8 -*-
+"""GEMS Dashboard - landing page and navigation.
 
 Pages are registered with ``st.navigation`` using root-level ``page_*.py``
 scripts. (Azure Oryx often omits a ``pages/`` subfolder from the runtime
@@ -13,11 +14,13 @@ Other HTML blocks use ``textwrap.dedent`` before Markdown where needed.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import textwrap
+from datetime import date, datetime
 from pathlib import Path
 
-import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -26,13 +29,17 @@ load_dotenv(_DASHBOARD_ROOT / ".env", override=True)
 if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
-from gems_auth import get_current_user, is_authorized  # noqa: E402
-from gems_data import GemsData  # noqa: E402
+from gems_auth import (  # noqa: E402
+    get_current_user_info,
+    is_authorized,
+    render_email_verification_banner,
+)
 from gems_logo_data import (  # noqa: E402
     GEMS_LOGO_PNG_B64,
     GLOBAL_METHANE_HUB_PNG_B64,
 )
 from gems_ui import apply_theme, render_html, sidebar_user  # noqa: E402
+from llm_client import check_llm_endpoint  # noqa: E402
 
 st.set_page_config(
     page_title="GEMS Dashboard",
@@ -42,6 +49,7 @@ st.set_page_config(
 )
 
 apply_theme()
+check_llm_endpoint()
 
 
 def _md_html(body: str) -> str:
@@ -76,6 +84,363 @@ def _clean_b64(s: str) -> str:
     return "".join(s.split())
 
 
+_HOME_CATALOG = "gems_catalog"
+_HOME_SCHEMA = "gems_schema"
+_RESOURCES_DIR = _DASHBOARD_ROOT / "resources"
+_LOCATION_CACHE_PATH = _RESOURCES_DIR / "location_cache.json"
+_CONSORTIUM_MEMBERS = [
+    ("Cornell University", "cornell_university.png"),
+    ("University of California", "university_of_california.png"),
+    ("University of Guelph", "university_of_guelph.png"),
+    ("ETH Zurich", "eth_zurich.png"),
+    ("University of New England", "university_of_new_england.png"),
+    ("Agriculture and Agri-Food Canada", "agriculture_and_agri_food_canada.png"),
+]
+
+
+def _home_connect():
+    from databricks import sql as dsql
+
+    host = os.environ.get("DATABRICKS_HOST", "").strip().rstrip("/")
+    if host.startswith("https://"):
+        host = host[len("https://") :]
+    http_path = os.environ.get("DATABRICKS_HTTP_PATH", "").strip()
+    token = os.environ.get("DATABRICKS_TOKEN", "").strip()
+    if not (host and http_path and token):
+        raise RuntimeError("Databricks connection settings are incomplete")
+    return dsql.connect(server_hostname=host, http_path=http_path, access_token=token)
+
+
+def _fq(table: str) -> str:
+    return f"`{_HOME_CATALOG}`.`{_HOME_SCHEMA}`.`{table}`"
+
+
+def _col(name: str) -> str:
+    return f"`{name}`"
+
+
+def _norm_col(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _table_columns(table: str) -> list[str]:
+    try:
+        with _home_connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DESCRIBE TABLE {_fq(table)}")
+            rows = cur.fetchall()
+        cols = []
+        for row in rows:
+            name = str(row[0] or "").strip()
+            if name and not name.startswith("#"):
+                cols.append(name)
+        return cols
+    except Exception:
+        return []
+
+
+def _resolve_col(table: str, *candidates: str) -> str | None:
+    columns = _table_columns(table)
+    by_norm = {_norm_col(col): col for col in columns}
+    for candidate in candidates:
+        resolved = by_norm.get(_norm_col(candidate))
+        if resolved:
+            return resolved
+    return None
+
+
+def _fetch_one(sql: str):
+    with _home_connect() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone()
+    return row
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _study_count_live():
+    for table in ("bronzeanimalcharacteristics", "goldanimalcharacteristics"):
+        study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
+        if not study_col:
+            continue
+        try:
+            row = _fetch_one(f"SELECT COUNT(DISTINCT {_col(study_col)}) FROM {_fq(table)}")
+            if row and row[0] not in (None, 0):
+                return int(row[0])
+        except Exception:
+            continue
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _animal_count_live():
+    for table in ("bronzeanimalcharacteristics", "goldanimalcharacteristics"):
+        study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
+        animal_col = _resolve_col(table, "AnimalIdentifier", "animalIdentifier", "animal_id")
+        if not study_col or not animal_col:
+            continue
+        try:
+            row = _fetch_one(
+                f"SELECT COUNT(DISTINCT CONCAT({_col(study_col)}, '__', {_col(animal_col)})) "
+                f"FROM {_fq(table)}"
+            )
+            if row and row[0] not in (None, 0):
+                return int(row[0])
+        except Exception:
+            continue
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _date_range_live():
+    for table in ("bronzeexperimentaldesign", "goldexperimentaldesign"):
+        date_col = _resolve_col(table, "Date", "date", "measurementDate", "MeasurementDate")
+        if not date_col:
+            continue
+        try:
+            row = _fetch_one(
+                f"SELECT MIN({_col(date_col)}) AS d_min, MAX({_col(date_col)}) AS d_max "
+                f"FROM {_fq(table)}"
+            )
+            if row and row[0] is not None and row[1] is not None:
+                return [_json_date(row[0]), _json_date(row[1])]
+        except Exception:
+            continue
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _site_rows_live() -> list[dict]:
+    for table in ("bronzeexperimentaldesign", "goldexperimentaldesign"):
+        study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
+        location_col = _resolve_col(
+            table,
+            "ExperimentalLocation",
+            "experimentalLocation",
+            "Experimental location",
+            "experimental_location",
+        )
+        if not study_col or not location_col:
+            continue
+        try:
+            loc = _col(location_col)
+            with _home_connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {loc}, COUNT(DISTINCT {_col(study_col)}) AS study_count "
+                    f"FROM {_fq(table)} "
+                    f"WHERE {loc} IS NOT NULL "
+                    f"AND TRIM(CAST({loc} AS STRING)) <> '' "
+                    f"GROUP BY {loc}"
+                )
+                rows = cur.fetchall()
+            sites = [
+                {"location": str(row[0]).strip(), "study_count": int(row[1] or 0)}
+                for row in rows
+                if row and str(row[0] or "").strip()
+            ]
+            if sites:
+                return sites
+        except Exception:
+            continue
+    return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _institution_count_live():
+    sites = _site_rows_live()
+    if sites:
+        return len({site["location"] for site in sites if site.get("location")})
+    return None
+
+
+def _json_date(value) -> str:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _format_month(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%b %Y")
+    except Exception:
+        try:
+            return datetime.strptime(value[:10], "%Y-%m-%d").strftime("%b %Y")
+        except Exception:
+            return value[:7] if value else "Loading..."
+
+
+def _stat_value(cache_key: str, fetcher, formatter=lambda value: f"{value:,}") -> str:
+    value = fetcher()
+    if value is not None:
+        st.session_state[cache_key] = value
+    else:
+        value = st.session_state.get(cache_key)
+    if value is None:
+        return "Loading..."
+    return formatter(value)
+
+
+def _date_stat_value() -> str:
+    value = _date_range_live()
+    if value:
+        st.session_state["home_stat_date_range"] = value
+        return _date_range_label(value)
+    cached = st.session_state.get("home_stat_date_range")
+    if cached:
+        return _date_range_label(cached)
+    return "No data"
+
+
+def _date_range_label(value: list[str] | None) -> str:
+    if not value:
+        return "No data"
+    return f"{_format_month(value[0])} - {_format_month(value[1])}"
+
+
+def _read_location_cache() -> dict:
+    try:
+        if _LOCATION_CACHE_PATH.exists():
+            return json.loads(_LOCATION_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _write_location_cache(cache: dict) -> None:
+    try:
+        _RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
+        _LOCATION_CACHE_PATH.write_text(
+            json.dumps(cache, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _geocode_sites(sites: list[dict]) -> list[dict]:
+    cache = _read_location_cache()
+    changed = False
+    geolocator = None
+    located: list[dict] = []
+    for site in sites:
+        location = site["location"]
+        cached = cache.get(location)
+        if cached is None:
+            try:
+                if geolocator is None:
+                    from geopy.geocoders import Nominatim
+
+                    geolocator = Nominatim(user_agent="gems-dashboard")
+                result = geolocator.geocode(location, timeout=8)
+                if result:
+                    cached = {"lat": result.latitude, "lon": result.longitude}
+                    cache[location] = cached
+                    changed = True
+            except Exception:
+                cached = None
+        if cached:
+            located.append(
+                {
+                    "location": location,
+                    "study_count": site.get("study_count", 0),
+                    "lat": float(cached["lat"]),
+                    "lon": float(cached["lon"]),
+                }
+            )
+    if changed:
+        _write_location_cache(cache)
+    return located
+
+
+def _render_stat_cards() -> None:
+    institutions = _stat_value("home_stat_institutions", _institution_count_live)
+    studies = _stat_value("home_stat_studies", _study_count_live)
+    animals = _stat_value("home_stat_animals", _animal_count_live)
+    date_range = _date_stat_value()
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    cards = [
+        (sc1, institutions, "Partner institutions"),
+        (sc2, studies, "Studies"),
+        (sc3, animals, "Animals"),
+        (sc4, date_range, "Date range"),
+    ]
+    for col, value, label in cards:
+        col.markdown(
+            f'<div class="gems-stat"><div class="v">{value}</div>'
+            f'<div class="l">{label}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        """
+        <div class="gems-trust-row">
+          <span>Live | Data from Databricks</span>
+          <span>Secure | Auth0 sign-in + allowlist</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_consortium_section() -> None:
+    st.markdown("#### Consortium Members")
+    logos_dir = _DASHBOARD_ROOT / "assets" / "logos"
+    logo_files = sorted(logos_dir.glob("*")) if logos_dir.exists() else []
+
+    if logo_files:
+        cols = st.columns(min(6, len(_CONSORTIUM_MEMBERS)))
+        for idx, (name, filename) in enumerate(_CONSORTIUM_MEMBERS):
+            logo_path = logos_dir / filename
+            with cols[idx % len(cols)]:
+                if logo_path.exists():
+                    st.image(str(logo_path), caption=name, use_container_width=True)
+                else:
+                    st.markdown(f'<div class="gems-member-card">{name}</div>', unsafe_allow_html=True)
+    else:
+        cards = "".join(
+            f'<div class="gems-member-card">{name}</div>' for name, _ in _CONSORTIUM_MEMBERS
+        )
+        st.markdown(f'<div class="gems-member-grid">{cards}</div>', unsafe_allow_html=True)
+
+
+def _render_site_map() -> None:
+    st.markdown("#### Contributing sites around the world")
+    sites = _site_rows_live()
+    if sites:
+        st.session_state["home_site_rows"] = sites
+    else:
+        sites = st.session_state.get("home_site_rows", [])
+
+    located = _geocode_sites(sites) if sites else []
+    if not located:
+        st.info("Loading contributing-site map...")
+        return
+
+    import folium
+    from folium.plugins import MarkerCluster
+    from streamlit_folium import st_folium
+
+    center_lat = sum(site["lat"] for site in located) / len(located)
+    center_lon = sum(site["lon"] for site in located) / len(located)
+    fmap = folium.Map(location=[center_lat, center_lon], zoom_start=2, tiles="CartoDB positron")
+    cluster = MarkerCluster().add_to(fmap)
+    for site in located:
+        folium.Marker(
+            location=[site["lat"], site["lon"]],
+            popup=folium.Popup(
+                f"<strong>{site['location']}</strong><br>{site['study_count']} studies",
+                max_width=280,
+            ),
+            tooltip=site["location"],
+            icon=folium.Icon(color="darkgreen", icon="leaf", prefix="fa"),
+        ).add_to(cluster)
+    st_folium(fmap, height=390, use_container_width=True)
+    st.caption(
+        "Locations are pulled from Databricks and geocoded with a committed local cache."
+    )
+
+
 def _hero_html() -> str:
     """Hero HTML with embedded logos for st.markdown(unsafe_allow_html=True).
 
@@ -91,7 +456,7 @@ def _hero_html() -> str:
         'font-size:0.8rem;">Global Methane Hub</span>'
         '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
         "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
-        'font-size:0.8rem;">Cornell University · lead coordinator</span>'
+        'font-size:0.8rem;">Cornell University | lead coordinator</span>'
         '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
         "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
         'font-size:0.8rem;">50+ partner institutions</span>'
@@ -140,7 +505,7 @@ def _hero_html() -> str:
         <p style="margin:0;font-size:0.94rem;line-height:1.55;color:#fff;">
           Develop science-based, standardized operating procedures for both
           utilizing and interpreting GreenFeed data under different management
-          practices — so every partner can produce comparable, defensible
+          practices - so every partner can produce comparable, defensible
           emissions measurements.
         </p>
       </div>
@@ -151,7 +516,8 @@ def _hero_html() -> str:
 
 
 def _render_home() -> None:
-    user = get_current_user()
+    user_info = get_current_user_info()
+    user = user_info.email
     sidebar_user(user)
     st.sidebar.markdown(
         '<a href="/.auth/logout" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
@@ -165,81 +531,23 @@ def _render_home() -> None:
             "Use the links above to explore data, fit models, chat, and manage API access."
         )
     else:
+        if not user_info.email_verified:
+            render_email_verification_banner(user_info)
         st.sidebar.warning(
             "You are signed in but not yet authorized to access the data pages. "
             "Contact the dashboard administrator to request access."
         )
 
-    # Hero via st.markdown so embedded <img data:...> logos render (iframe CSP blocks them).
     st.markdown(_hero_html(), unsafe_allow_html=True)
 
+    _render_consortium_section()
+    st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
+    _render_stat_cards()
+    st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
+
     col_map, col_mission = st.columns([1.55, 1], gap="large")
-
     with col_map:
-        st.markdown("#### Contributing sites around the world")
-
-        pins = [
-            ("Cornell University (Ithaca, NY)", 42.44, -76.50),
-            ("University of Guelph (Ontario, CA)", 43.55, -80.25),
-            ("Agriculture & Agri-Food Canada (Ottawa)", 45.42, -75.70),
-            ("UC Davis (California)", 38.54, -121.74),
-            ("Texas / Gulf region", 30.0, -97.5),
-            ("Mexico / Central America", 19.4, -99.1),
-            ("Colombia / northern Andes", 4.7, -74.1),
-            ("Argentina / Pampas", -34.6, -58.4),
-            ("Brazil / Cerrado", -15.8, -47.9),
-            ("United Kingdom", 52.5, -1.9),
-            ("Netherlands", 52.1, 5.3),
-            ("ETH Zürich (Switzerland)", 47.37, 8.55),
-            ("Ireland", 53.3, -6.3),
-            ("Kenya (East Africa)", -1.3, 36.8),
-            ("South Africa", -25.7, 28.2),
-            ("India (IARI region)", 28.6, 77.2),
-            ("China (Inner Mongolia)", 40.8, 111.7),
-            ("University of New England (NSW, Australia)", -30.5, 151.65),
-            ("New Zealand", -41.3, 174.8),
-        ]
-
-        fig = go.Figure(
-            go.Scattergeo(
-                lat=[p[1] for p in pins],
-                lon=[p[2] for p in pins],
-                text=[p[0] for p in pins],
-                hoverinfo="text",
-                mode="markers",
-                marker=dict(
-                    symbol="circle",
-                    size=13,
-                    color="#1565C0",
-                    line=dict(color="#0D47A1", width=1.5),
-                    opacity=0.88,
-                ),
-            )
-        )
-        fig.update_geos(
-            projection_type="natural earth",
-            showland=True,
-            landcolor="#EAF3EE",
-            showocean=True,
-            oceancolor="#F4F8FA",
-            showcountries=True,
-            countrycolor="#C8D4CD",
-            showcoastlines=True,
-            coastlinecolor="#9FB3A7",
-            showframe=False,
-            lataxis=dict(range=[-55, 75]),
-        )
-        fig.update_layout(
-            height=380,
-            margin=dict(l=0, r=0, t=5, b=0),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(
-            "Approximate locations of contributing sites. The GEMS data warehouse "
-            "aggregates GreenFeed measurements from partners on every continent."
-        )
+        _render_site_map()
 
     with col_mission:
         st.markdown("#### Why GEMS?")
@@ -280,7 +588,6 @@ def _render_home() -> None:
                     every partner benefits from every improvement.</p>
                   </div>
                 </div>
-
                 <div class="gems-muted" style="margin-top:0.9rem;">
                 Contact: <a href="mailto:gems@cornell.edu">gems@cornell.edu</a>
                 </div>
@@ -358,65 +665,11 @@ def _render_home() -> None:
             unsafe_allow_html=True,
         )
 
-    st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
-
-    try:
-        data = GemsData()
-        h = data.health()
-        status = h.get("status", "unknown")
-        table_count = int(h.get("allowed_table_count", 0))
-        catalog = h.get("catalog", "?")
-        schema = h.get("schema", "?")
-    except Exception:
-        status = "error"
-        table_count = 0
-        catalog = schema = "?"
-        h = {}
-
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    sc1.markdown(
-        f'<div class="gems-stat"><div class="v">50+</div>'
-        f'<div class="l">Partner institutions</div></div>',
-        unsafe_allow_html=True,
-    )
-    sc2.markdown(
-        f'<div class="gems-stat"><div class="v">{table_count}</div>'
-        f'<div class="l">Tables available</div></div>',
-        unsafe_allow_html=True,
-    )
-    sc3.markdown(
-        f'<div class="gems-stat"><div class="v">Live</div>'
-        f'<div class="l">Data from Databricks</div></div>',
-        unsafe_allow_html=True,
-    )
-    sc4.markdown(
-        f'<div class="gems-stat"><div class="v">Secure</div>'
-        f'<div class="l">Auth0 sign-in + allowlist</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### Connection status")
-    if status == "ok":
-        st.success(
-            f"Connected to `{catalog}.{schema}` — {table_count} tables available."
-        )
-    elif status == "error":
-        st.error(
-            "Could not reach Databricks. Check `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, "
-            "`DATABRICKS_TOKEN`, and `ALLOWED_TABLES`."
-        )
-    else:
-        st.warning(
-            f"Status `{status}` with {table_count} allowed tables. "
-            "Check the `DATABRICKS_*` env vars and `ALLOWED_TABLES`."
-        )
-
     st.markdown(
         '<div class="gems-footer">Authentication by Auth0 through Azure App Service '
         "Authentication. Use Sign out if you are signed in with the wrong account.</div>",
         unsafe_allow_html=True,
     )
-
 
 pg = st.navigation(
     [
@@ -428,3 +681,5 @@ pg = st.navigation(
     ]
 )
 pg.run()
+
+

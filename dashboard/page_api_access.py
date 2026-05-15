@@ -10,8 +10,9 @@ import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parent))
 
+from permissions import has_api_access  # noqa: E402
 from gems_api_keys import ApiKeyStore  # noqa: E402
-from gems_auth import require_authorized_user  # noqa: E402
+from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_ui import page_header, sidebar_user  # noqa: E402
 
 st.set_page_config(page_title="API Access · GEMS", layout="wide", page_icon="🔑")
@@ -22,6 +23,7 @@ page_header(
 
 user = require_authorized_user()
 sidebar_user(user)
+user_info = get_current_user_info()
 
 api_base_url = os.environ.get("GEMS_API_BASE_URL", "").strip().rstrip("/")
 allowed_tables = [
@@ -30,13 +32,20 @@ allowed_tables = [
     if item.strip()
 ]
 
-store = ApiKeyStore()
-
 if not api_base_url:
     st.warning(
         "`GEMS_API_BASE_URL` is not set. Add the FastAPI App Service URL to dashboard "
         "environment variables so users see working examples."
     )
+
+if not has_api_access(user_info, user_info.bearer_token):
+    st.warning(
+        "Your account has dashboard access but not API data access. "
+        "Contact admin to upgrade."
+    )
+    st.stop()
+
+store = ApiKeyStore()
 
 if not store.enabled:
     st.error(

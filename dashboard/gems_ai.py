@@ -1,45 +1,31 @@
-"""Two small OpenAI helpers: interpret a chart, interpret a model."""
+"""Two small LLM helpers: interpret a chart, interpret a model."""
 
 from __future__ import annotations
 
-import os
-from functools import lru_cache
+from llm_client import get_llm_client, get_llm_model
 
 _PLOT_SYSTEM = (
     "You are a concise data analyst assisting livestock/animal-science researchers.\n"
-    "Given a chart description and summary statistics (no raw rows), write 3-6 short\n"
-    "bullet points interpreting the visualization. Call out caveats about sample size,\n"
-    "multiple comparisons, and causal language. Never invent values that are not in the\n"
-    "provided context."
+    "Given a chart description and summary statistics (no raw rows), return Markdown with:\n"
+    "1) a short level-3 summary header, 2) 3-6 bullet key points interpreting the visualization,\n"
+    "and 3) a closing italic line beginning with 'Caveats:'. Call out sample size,\n"
+    "multiple comparisons, and causal language. Never invent values that are not in the provided context."
 )
 
 _MODEL_SYSTEM = (
     "You are a statistician assisting livestock/animal-science researchers.\n"
     "Given a model specification, coefficient table (estimates, CIs, p-values), and fit\n"
-    "statistics (R-squared, AIC, random-effect variances for LMM), produce a plain-English\n"
-    "interpretation in 4-8 bullet points. Flag the usual assumptions (linearity, residual\n"
-    "normality, independence), and warn against overreach (causal claims without designed\n"
-    "experiments, multiple-testing concerns). Do not invent values."
+    "statistics (R-squared, AIC, random-effect variances for LMM), return Markdown with:\n"
+    "1) a short level-3 summary header, 2) 3-6 bullet key points in plain English,\n"
+    "and 3) a closing italic line beginning with 'Caveats:'. Flag the usual assumptions\n"
+    "(linearity, residual normality, independence), and warn against overreach (causal claims\n"
+    "without designed experiments, multiple-testing concerns). Do not invent values."
 )
 
 
-@lru_cache(maxsize=1)
-def _client():
-    from openai import OpenAI
-
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-    return OpenAI(api_key=key)
-
-
-def _model() -> str:
-    return os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-
 def _chat(system: str, user: str) -> str:
-    resp = _client().chat.completions.create(
-        model=_model(),
+    resp = get_llm_client().chat.completions.create(
+        model=get_llm_model(),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
