@@ -136,6 +136,14 @@ def _auth0_management_token() -> str:
 
 
 def resend_verification_email(user_id: str) -> tuple[bool, str]:
+    if not user_id:
+        return (
+            False,
+            "Email verification resend requires the Auth0 user id, but Azure did not pass it "
+            "to the dashboard. Contact the administrator or check your spam folder for the "
+            "original Auth0 signup email.",
+        )
+
     domain = os.environ.get("AUTH0_DOMAIN", "").strip().rstrip("/")
     if not domain:
         return (
