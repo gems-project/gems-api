@@ -310,7 +310,6 @@ DATABRICKS_TOKEN=<Databricks PAT>
 GEMS_CATALOG=gems_catalog
 GEMS_SCHEMA=gold_v1
 ALLOWED_TABLES=goldanimalcharacteristics,goldbodyweight,...
-MAX_EXPORT_ROWS=100000
 ```
 
 Recommended:

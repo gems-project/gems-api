@@ -17,7 +17,6 @@ This file keeps **copy-paste** commands and tables for operators who already kno
 | `GEMS_SCHEMA` | `gems_schema` | Adjust if needed |
 | `ALLOWED_TABLES` | `table1,table2` | Comma-separated |
 | `GEMS_API_KEY` | long random secret | Sent as header `X-API-Key` |
-| `MAX_EXPORT_ROWS` | `100000` | Optional |
 
 **Portal:** Web App → **Environment variables** → **App settings** → **+ Add** → **Save**.
 

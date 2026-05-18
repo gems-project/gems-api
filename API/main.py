@@ -65,7 +65,6 @@ def _cfg() -> dict:
         "catalog": os.getenv("GEMS_CATALOG", "gems_catalog").strip(),
         "schema": _default_schema(),
         "allowed": _parse_allowed_tables(os.getenv("ALLOWED_TABLES", "")),
-        "max_rows": int(os.getenv("MAX_EXPORT_ROWS", "100000")),
         "tables_conn": os.getenv("AZURE_TABLES_CONNECTION_STRING", "").strip(),
         "api_keys_table": os.getenv("AZURE_API_KEYS_TABLE", "gemsApiKeys").strip(),
         "api_key_pepper": os.getenv("API_KEY_PEPPER", "").strip(),
@@ -478,7 +477,7 @@ def export_csv(
     elif since_col or since_value:
         raise HTTPException(400, "Provide both since_col and since_value, or neither")
 
-    sql = f"SELECT * FROM {fq}{where} LIMIT {c['max_rows']}"
+    sql = f"SELECT * FROM {fq}{where}"
 
     try:
         conn = _connect_db()
@@ -538,7 +537,7 @@ _FORBIDDEN_SQL = re.compile(
 
 class QueryRequest(BaseModel):
     sql: str = Field(..., min_length=1, max_length=20_000)
-    limit: int | None = Field(default=1000, ge=1, le=100_000)
+    limit: int | None = Field(default=None, ge=1)
     schema_: GemsSchema = Field(default=GemsSchema.gold_v1, alias="schema")
 
 
@@ -606,15 +605,15 @@ def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
       - SELECT / WITH only
       - single statement
       - references must be to allowlisted tables (or CTE names)
-      - hard row cap (wrapped in an outer LIMIT)
+      - optional caller-provided row limit
     """
     c = _cfg()
     schema_name = req.schema_.value
     safe = _validate_select_sql(req.sql, c["allowed"], c["catalog"], schema_name)
 
-    requested = int(req.limit or 1000)
-    limit = min(requested, c["max_rows"])
-    wrapped_sql = f"SELECT * FROM ({safe}) AS __gems_q LIMIT {limit}"
+    limit = int(req.limit) if req.limit is not None else None
+    limit_sql = f" LIMIT {limit}" if limit is not None else ""
+    wrapped_sql = f"SELECT * FROM ({safe}) AS __gems_q{limit_sql}"
 
     try:
         conn = _connect_db()
@@ -648,5 +647,5 @@ def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
         "rows": data,
         "row_count": len(data),
         "limit_applied": limit,
-        "truncated": len(data) >= limit,
+        "truncated": limit is not None and len(data) >= limit,
     }

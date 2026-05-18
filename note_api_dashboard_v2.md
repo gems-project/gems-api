@@ -817,7 +817,6 @@ ALLOWED_API_USERS=<API-tier users>
 AUTH0_DOMAIN=<Auth0 domain, for /authz/me bearer-token validation>
 AUTH0_AUDIENCE=<optional, if configured>
 DASHBOARD_API_AUTHZ_SECRET=<same as dashboard>
-MAX_EXPORT_ROWS=100000
 ```
 
 Final rule:

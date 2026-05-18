@@ -183,7 +183,6 @@ Edit **`API/.env`** with real values. **Never commit `.env`.** Do not put secret
 | `ALLOWED_API_USERS` | Required API-tier allowlist; keys owned by users not in this list are rejected |
 | `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` | Used by `/authz/me` to validate dashboard bearer tokens |
 | `DASHBOARD_API_AUTHZ_SECRET` | Shared secret used by `gems-dashboard` to call `/authz/allowed-users` |
-| `MAX_EXPORT_ROWS` | Optional cap (default `100000` in code if unset) |
 
 Run:
 
@@ -259,7 +258,6 @@ Enable **Always On** under **Configuration → General settings** if your plan s
 | `ALLOWED_API_USERS` | Required API-tier allowlist; use the users who should generate/use API keys |
 | `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` | Used by `/authz/me` to validate dashboard bearer tokens |
 | `DASHBOARD_API_AUTHZ_SECRET` | Same shared random value used by `gems-dashboard` |
-| `MAX_EXPORT_ROWS` | Optional |
 
 **Deployment slot setting:** leave **unchecked** unless you use staging slots and need different values per slot.
 
