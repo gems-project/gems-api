@@ -58,18 +58,19 @@ Open `http://localhost:8501`.
    - Databricks: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`
    - Dataset scope: `GEMS_CATALOG`, `GEMS_SCHEMA`, `ALLOWED_TABLES`
    - AI: `DATABRICKS_LLM_ENDPOINT`
-   - API access: `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, `API_KEY_PEPPER`, `GEMS_API_BASE_URL`
-   - Data access gate: `ALLOWED_USERS` and/or `ALLOWED_DOMAINS`
+   - API access: `AZURE_TABLES_CONNECTION_STRING`, `AZURE_API_KEYS_TABLE`, `API_KEY_PEPPER`, `GEMS_API_BASE_URL`, `DASHBOARD_API_AUTHZ_SECRET`
+   - Dashboard data access gate: `ALLOWED_USERS`
    - Optional Auth0 verification resend: `AUTH0_DOMAIN` plus either `AUTH0_MANAGEMENT_API_TOKEN` or both `AUTH0_MANAGEMENT_CLIENT_ID` and `AUTH0_MANAGEMENT_CLIENT_SECRET`. The Management API application needs permission to create verification email jobs (`create:user_tickets` / verification email job access in Auth0 Management API). If these are omitted, the dashboard shows a friendly message and asks users to use the original Auth0 verification email or contact an administrator.
 
 ## Access Control Model (Current)
 
 - Easy Auth controls who can sign in.
-- `gems-dashboard.ALLOWED_USERS` controls dashboard data-page access.
-- `GEMS-API.ALLOWED_USERS` controls API-tier data access and must be a subset of `gems-dashboard.ALLOWED_USERS`.
+- `gems-dashboard.ALLOWED_USERS` controls Explore / Modeling / Chat access.
+- `GEMS-API.ALLOWED_API_USERS` controls API Access page visibility, API-key generation, and whether the API service accepts the user.
+
 - Home page remains visible to signed-in users.
-- Anyone added to `GEMS-API.ALLOWED_USERS` must also be added to `gems-dashboard.ALLOWED_USERS`.
-- Explore/Modeling/Chat call `require_authorized_user()`; API Access also checks API-tier access through `GEMS-API /authz/me`.
+- A user must be in both `gems-dashboard.ALLOWED_USERS` and `GEMS-API.ALLOWED_API_USERS` for full dashboard + API functionality.
+- Explore/Modeling/Chat call `require_authorized_user()`; API Access checks `GEMS-API.ALLOWED_API_USERS` through `GEMS-API`.
 
 `ALLOWED_USERS` example:
 
@@ -105,5 +106,6 @@ What the script does:
 
 - **Deploy says success but app errors:** check runtime logs; upload/build success is separate from app logic success.
 - **No tables shown:** verify `ALLOWED_TABLES` and Databricks env vars.
-- **Unauthorized on data pages:** check `ALLOWED_USERS`/`ALLOWED_DOMAINS`.
+- **Unauthorized on data pages:** check `ALLOWED_USERS`.
+- **Dashboard user cannot access API page:** check `ALLOWED_API_USERS` on `gems-api` and confirm `DASHBOARD_API_AUTHZ_SECRET` matches in both apps.
 - **Git object cleanup prompts on Windows/OneDrive:** usually non-fatal; verify commit with `git log -1` and `git status`.

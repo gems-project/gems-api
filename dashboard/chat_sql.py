@@ -7,6 +7,14 @@ class SQLValidationError(ValueError):
     pass
 
 
+FQ_NAME_ERROR = (
+    "Use a fully-qualified name with backticks like "
+    "`gems_catalog`.`gold_v1`.`goldbodyweight`. Do not use schema prefixes "
+    "like `gold`, `silver`, `bronze`, or `gems_schema`. Re-check list_tables output and use "
+    "the full_name field directly."
+)
+
+
 _FORBIDDEN_SQL = re.compile(
     r"\b(drop|delete|update|insert|merge|alter|create|replace|truncate|grant|revoke|copy|call|use|set|load|vacuum|optimize|refresh)\b",
     re.IGNORECASE,
@@ -60,19 +68,19 @@ def validate_aggregate_query(
             db_name = db.name if db is not None else None
             cat_name = cat.name if cat is not None else None
             if cat_name is not None and cat_name != catalog:
-                raise SQLValidationError(f"Catalog '{cat_name}' is not allowed.")
+                raise SQLValidationError(FQ_NAME_ERROR)
             if db_name is not None and db_name != schema:
-                raise SQLValidationError(f"Schema '{db_name}' is not allowed.")
+                raise SQLValidationError(FQ_NAME_ERROR)
             if name not in allowed:
-                raise SQLValidationError(f"Table '{name}' is not allowed.")
+                raise SQLValidationError(FQ_NAME_ERROR)
     except ModuleNotFoundError:
         lowered_for_tables = statement.lower()
         if not any(re.search(rf"\b{re.escape(table.lower())}\b", lowered_for_tables) for table in allowed):
-            raise SQLValidationError("No allowlisted table found in SQL.")
+            raise SQLValidationError(FQ_NAME_ERROR)
         forbidden_fq = re.findall(r"\b([a-zA-Z][\w]*)\.([a-zA-Z][\w]*)\.([a-zA-Z][\w]*)\b", statement)
         for cat_name, db_name, table_name in forbidden_fq:
             if cat_name != catalog or db_name != schema or table_name not in allowed:
-                raise SQLValidationError(f"Table reference '{cat_name}.{db_name}.{table_name}' is not allowed.")
+                raise SQLValidationError(FQ_NAME_ERROR)
     except SQLValidationError:
         raise
     except Exception as exc:

@@ -84,10 +84,27 @@ def _clean_b64(s: str) -> str:
     return "".join(s.split())
 
 
-_HOME_CATALOG = "gems_catalog"
-_HOME_SCHEMA = "gems_schema"
+_HOME_CATALOG = os.environ.get("GEMS_CATALOG", "gems_catalog")
+_HOME_SCHEMA = os.environ.get("GEMS_SCHEMA", "gold_v1")
 _RESOURCES_DIR = _DASHBOARD_ROOT / "resources"
-_LOCATION_CACHE_PATH = _RESOURCES_DIR / "location_cache.json"
+_SITE_GEOCACHE_PATH = _RESOURCES_DIR / "site_geocache.json"
+_LOCATION_FALLBACKS = {
+    "cornell": {"lat": 42.4534, "lon": -76.4735},
+    "ithaca": {"lat": 42.4430, "lon": -76.5019},
+    "california": {"lat": 36.7783, "lon": -119.4179},
+    "davis": {"lat": 38.5449, "lon": -121.7405},
+    "guelph": {"lat": 43.5448, "lon": -80.2482},
+    "zurich": {"lat": 47.3769, "lon": 8.5417},
+    "eth": {"lat": 47.3769, "lon": 8.5417},
+    "new england": {"lat": -30.5126, "lon": 151.6650},
+    "armidale": {"lat": -30.5142, "lon": 151.6690},
+    "canada": {"lat": 45.4215, "lon": -75.6972},
+    "ottawa": {"lat": 45.4215, "lon": -75.6972},
+    "australia": {"lat": -25.2744, "lon": 133.7751},
+    "switzerland": {"lat": 46.8182, "lon": 8.2275},
+    "united states": {"lat": 39.8283, "lon": -98.5795},
+    "usa": {"lat": 39.8283, "lon": -98.5795},
+}
 _CONSORTIUM_MEMBERS = [
     ("Cornell University", "cornell_university.png"),
     ("University of California", "university_of_california.png"),
@@ -96,6 +113,15 @@ _CONSORTIUM_MEMBERS = [
     ("University of New England", "university_of_new_england.png"),
     ("Agriculture and Agri-Food Canada", "agriculture_and_agri_food_canada.png"),
 ]
+_DEFAULT_SITE_ROWS = [
+    {"location": "Cornell University, Ithaca, United States", "study_count": 0},
+    {"location": "University of California, Davis, United States", "study_count": 0},
+    {"location": "University of Guelph, Guelph, Canada", "study_count": 0},
+    {"location": "ETH Zurich, Zurich, Switzerland", "study_count": 0},
+    {"location": "University of New England, Armidale, Australia", "study_count": 0},
+    {"location": "Agriculture and Agri-Food Canada, Ottawa, Canada", "study_count": 0},
+]
+_SITE_GEOCACHE: dict = {}
 
 
 def _home_connect():
@@ -301,19 +327,26 @@ def _date_range_label(value: list[str] | None) -> str:
     return f"{_format_month(value[0])} - {_format_month(value[1])}"
 
 
-def _read_location_cache() -> dict:
+def _normalize_site_for_geocode(location: str) -> str:
+    text = (location or "").strip()
+    if text.lower() == "cornell":
+        return "Cornell University, Ithaca, New York, United States"
+    return text
+
+
+def _read_site_geocache() -> dict:
     try:
-        if _LOCATION_CACHE_PATH.exists():
-            return json.loads(_LOCATION_CACHE_PATH.read_text(encoding="utf-8"))
+        if _SITE_GEOCACHE_PATH.exists():
+            return json.loads(_SITE_GEOCACHE_PATH.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}
 
 
-def _write_location_cache(cache: dict) -> None:
+def _write_site_geocache(cache: dict) -> None:
     try:
         _RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
-        _LOCATION_CACHE_PATH.write_text(
+        _SITE_GEOCACHE_PATH.write_text(
             json.dumps(cache, indent=2, sort_keys=True),
             encoding="utf-8",
         )
@@ -321,28 +354,50 @@ def _write_location_cache(cache: dict) -> None:
         pass
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def _fallback_coordinates(location: str) -> dict | None:
+    normalized = " ".join((location or "").lower().replace(",", " ").split())
+    for key, coords in _LOCATION_FALLBACKS.items():
+        if key in normalized:
+            return coords
+    return None
+
+
+def _geocode_one(location: str) -> dict | None:
+    try:
+        from geopy.geocoders import Nominatim
+
+        geolocator = Nominatim(user_agent="gems-dashboard")
+        result = geolocator.geocode(_normalize_site_for_geocode(location), timeout=5)
+        if result:
+            return {
+                "lat": float(result.latitude),
+                "lon": float(result.longitude),
+                "country": (result.raw.get("address") or {}).get("country"),
+            }
+    except Exception:
+        return None
+    return None
+
+
 def _geocode_sites(sites: list[dict]) -> list[dict]:
-    cache = _read_location_cache()
+    global _SITE_GEOCACHE
+    cache = dict(_SITE_GEOCACHE)
     changed = False
-    geolocator = None
     located: list[dict] = []
     for site in sites:
         location = site["location"]
         cached = cache.get(location)
         if cached is None:
-            try:
-                if geolocator is None:
-                    from geopy.geocoders import Nominatim
-
-                    geolocator = Nominatim(user_agent="gems-dashboard")
-                result = geolocator.geocode(location, timeout=8)
-                if result:
-                    cached = {"lat": result.latitude, "lon": result.longitude}
-                    cache[location] = cached
-                    changed = True
-            except Exception:
-                cached = None
+            cached = _geocode_one(location)
+            if cached:
+                cache[location] = cached
+                changed = True
+        if cached is None:
+            cached = _fallback_coordinates(location)
+            if cached:
+                cached = {"lat": cached["lat"], "lon": cached["lon"], "country": None}
+                cache[location] = cached
+                changed = True
         if cached:
             located.append(
                 {
@@ -350,10 +405,12 @@ def _geocode_sites(sites: list[dict]) -> list[dict]:
                     "study_count": site.get("study_count", 0),
                     "lat": float(cached["lat"]),
                     "lon": float(cached["lon"]),
+                    "country": cached.get("country"),
                 }
             )
     if changed:
-        _write_location_cache(cache)
+        _SITE_GEOCACHE = cache
+        _write_site_geocache(cache)
     return located
 
 
@@ -414,20 +471,23 @@ def _render_site_map() -> None:
     sites = _site_rows_live()
     if sites:
         st.session_state["home_site_rows"] = sites
+        showing_cached = False
     else:
-        sites = st.session_state.get("home_site_rows", [])
+        cached_rows = [
+            {"location": location, "study_count": 0}
+            for location in sorted(_SITE_GEOCACHE)
+        ]
+        sites = st.session_state.get("home_site_rows", cached_rows or _DEFAULT_SITE_ROWS)
+        showing_cached = True
 
     located = _geocode_sites(sites) if sites else []
-    if not located:
-        st.info("Loading contributing-site map...")
-        return
 
     import folium
     from folium.plugins import MarkerCluster
     from streamlit_folium import st_folium
 
-    center_lat = sum(site["lat"] for site in located) / len(located)
-    center_lon = sum(site["lon"] for site in located) / len(located)
+    center_lat = sum(site["lat"] for site in located) / len(located) if located else 20
+    center_lon = sum(site["lon"] for site in located) / len(located) if located else 0
     fmap = folium.Map(location=[center_lat, center_lon], zoom_start=2, tiles="CartoDB positron")
     cluster = MarkerCluster().add_to(fmap)
     for site in located:
@@ -441,9 +501,13 @@ def _render_site_map() -> None:
             icon=folium.Icon(color="darkgreen", icon="leaf", prefix="fa"),
         ).add_to(cluster)
     st_folium(fmap, height=390, use_container_width=True)
-    st.caption(
-        "Locations are pulled from Databricks and geocoded with a committed local cache."
-    )
+    if showing_cached:
+        st.caption("Showing cached site list while live Databricks locations are unavailable.")
+    else:
+        st.caption("Locations are pulled live from Databricks; coordinates come from the persisted site geocache.")
+
+
+_SITE_GEOCACHE = _read_site_geocache()
 
 
 def _hero_html() -> str:

@@ -1,0 +1,37 @@
+{
+  "Agriculture and Agri-Food Canada, Ottawa, Canada": {
+    "country": "Canada",
+    "lat": 45.4215,
+    "lon": -75.6972
+  },
+  "Cornell": {
+    "country": "United States",
+    "lat": 42.4534,
+    "lon": -76.4735
+  },
+  "Cornell University, Ithaca, United States": {
+    "country": "United States",
+    "lat": 42.4534,
+    "lon": -76.4735
+  },
+  "ETH Zurich, Zurich, Switzerland": {
+    "country": "Switzerland",
+    "lat": 47.3769,
+    "lon": 8.5417
+  },
+  "University of California, Davis, United States": {
+    "country": "United States",
+    "lat": 38.5449,
+    "lon": -121.7405
+  },
+  "University of Guelph, Guelph, Canada": {
+    "country": "Canada",
+    "lat": 43.5448,
+    "lon": -80.2482
+  },
+  "University of New England, Armidale, Australia": {
+    "country": "Australia",
+    "lat": -30.5126,
+    "lon": 151.665
+  }
+}

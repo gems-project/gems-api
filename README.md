@@ -54,7 +54,8 @@ Details: [`Delta sharing/README.md`](Delta%20sharing/README.md)
 ## Access model summary (dashboard)
 
 - **Sign-in:** handled by Azure App Service Easy Auth (Entra ID).
-- **Data access:** controlled in-app via `ALLOWED_USERS` / `ALLOWED_DOMAINS`.
+- **Dashboard data access:** controlled in-app via `gems-dashboard.ALLOWED_USERS`.
+- **API-tier access:** controlled by `GEMS-API.ALLOWED_API_USERS`; users need both lists for full dashboard + API access.
 - Home can remain visible while data pages are restricted.
 
 ## Security
@@ -64,7 +65,7 @@ Do not commit secrets, including:
 - `API/.env`
 - `dashboard/.env`
 - Databricks tokens
-- OpenAI keys
+- Databricks tokens and LLM endpoint settings
 - Azure storage connection strings
 - `config.share` / `config.json`
 

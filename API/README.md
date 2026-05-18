@@ -180,7 +180,9 @@ Edit **`API/.env`** with real values. **Never commit `.env`.** Do not put secret
 | `AZURE_TABLES_CONNECTION_STRING` | Storage account connection string shared with the dashboard API-key page |
 | `AZURE_API_KEYS_TABLE` | Table containing hashed per-user API keys, usually `gemsApiKeys` |
 | `API_KEY_PEPPER` | Long random server secret used to hash keys; must match the dashboard value |
-| `ALLOWED_USERS` / `ALLOWED_DOMAINS` | Optional mirror of dashboard data-access allowlist; if set, keys owned by removed users are rejected |
+| `ALLOWED_API_USERS` | Required API-tier allowlist; keys owned by users not in this list are rejected |
+| `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` | Used by `/authz/me` to validate dashboard bearer tokens |
+| `DASHBOARD_API_AUTHZ_SECRET` | Shared secret used by `gems-dashboard` to call `/authz/allowed-users` |
 | `MAX_EXPORT_ROWS` | Optional cap (default `100000` in code if unset) |
 
 Run:
@@ -254,7 +256,9 @@ Enable **Always On** under **Configuration → General settings** if your plan s
 | `AZURE_TABLES_CONNECTION_STRING` | Same storage connection string used by `gems-dashboard` |
 | `AZURE_API_KEYS_TABLE` | Usually `gemsApiKeys` |
 | `API_KEY_PEPPER` | Same long random value used by `gems-dashboard` |
-| `ALLOWED_USERS` / `ALLOWED_DOMAINS` | Optional but recommended: same allowlist as dashboard |
+| `ALLOWED_API_USERS` | Required API-tier allowlist; use the users who should generate/use API keys |
+| `AUTH0_DOMAIN` / `AUTH0_AUDIENCE` | Used by `/authz/me` to validate dashboard bearer tokens |
+| `DASHBOARD_API_AUTHZ_SECRET` | Same shared random value used by `gems-dashboard` |
 | `MAX_EXPORT_ROWS` | Optional |
 
 **Deployment slot setting:** leave **unchecked** unless you use staging slots and need different values per slot.

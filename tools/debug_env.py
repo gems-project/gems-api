@@ -34,7 +34,7 @@ print("dotenv_values parsed keys:")
 for k, v in raw.items():
     if v is None:
         display = "<None>"
-    elif k in ("DATABRICKS_TOKEN", "OPENAI_API_KEY"):
+    elif k == "DATABRICKS_TOKEN":
         display = f"{v[:6]}...{v[-4:]} (len={len(v)})"
     else:
         display = repr(v)

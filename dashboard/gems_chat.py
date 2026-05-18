@@ -45,7 +45,18 @@ def _dictionary_prompt() -> str:
     return json.dumps({"tables": compact_tables}, default=str)[:60_000]
 
 
-_SYSTEM_PROMPT = """You are a data analyst assistant for the GEMS project
+_SYSTEM_PROMPT = """You are a SQL data assistant for the GEMS database on Databricks.
+
+CRITICAL SQL RULES:
+- ALWAYS use fully-qualified table names with backticks: `gems_catalog`.`gold_v1`.`<table_name>`
+- The ONLY allowed schema is `gold_v1`. NEVER write `gold.`, `silver.`, `bronze.`, `gems_schema.`, or any other schema prefix.
+- The list_tables tool returns objects with a `full_name` field — use that string directly in your SELECTs.
+- SELECT statements only. No DDL, no DML, no system commands.
+- Always add LIMIT to large result sets unless the user asks for a specific aggregate.
+
+When you receive a tool error like 'Schema X is not allowed' or 'TABLE_OR_VIEW_NOT_FOUND', do NOT retry the same shape. Re-read the list_tables output and use the full_name field exactly as given.
+
+You are a data analyst assistant for the GEMS project
 (animal science / GreenFeed research data at Cornell).
 
 ABSOLUTE PRIVACY RULE:
@@ -54,6 +65,9 @@ ABSOLUTE PRIVACY RULE:
   or computed query results.
 - If a question requires individual row-level records, refuse and suggest an
   aggregate alternative.
+- If the requested table/domain is not available from list_tables, say that the
+  table is not currently available in this dashboard's allowlist and do not retry
+  made-up table names.
 
 Use tools to answer questions:
 1. list_tables() to see available tables.
@@ -66,7 +80,7 @@ Use tools to answer questions:
 SQL rules:
 - Use SELECT/WITH only.
 - Prefer COUNT, AVG, SUM, MIN, MAX, GROUP BY, and DISTINCT.
-- Use fully-qualified names when writing SQL.
+- Use the exact `full_name` string from list_tables for table references.
 - Do not use SELECT *.
 - Do not ask for individual animal/person/source-file records.
 - Do not fabricate values that did not appear in tool results.
@@ -91,7 +105,7 @@ TOOLS: list[dict] = [
             "description": "Return columns, dtypes, descriptions, sample size, and null percentages.",
             "parameters": {
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Raw table name."}},
+                "properties": {"name": {"type": "string", "description": "Raw table name from the table field, not full_name."}},
                 "required": ["name"],
                 "additionalProperties": False,
             },
@@ -152,6 +166,10 @@ def _dictionary_table(name: str) -> dict | None:
     return None
 
 
+def _full_table_name(data: GemsData, name: str) -> str:
+    return f"`{data.cfg['catalog']}`.`{data.cfg['schema']}`.`{name}`"
+
+
 def _describe_table(data: GemsData, name: str) -> dict:
     schema = data.get_schema(name)
     info = _dictionary_table(name) or {}
@@ -189,6 +207,7 @@ def _describe_table(data: GemsData, name: str) -> dict:
     if isinstance(sample_size, dict) and sample_size.get("rows"):
         row_count = sample_size["rows"][0].get("row_count")
     return {
+        "full_name": _full_table_name(data, name),
         "name": name,
         "description": info.get("description", ""),
         "sample_size": row_count,
@@ -205,7 +224,12 @@ def _execute_tool(data: GemsData, name: str, args: dict, state: dict) -> Any:
                 for table in dictionary.get("tables", [])
             }
             return [
-                {"name": table, "label": display_name(table), "description": descriptions.get(table, "")}
+                {
+                    "full_name": _full_table_name(data, table),
+                    "table": table,
+                    "label": display_name(table),
+                    "description": descriptions.get(table, ""),
+                }
                 for table in data.list_tables()
             ]
         if name == "describe_table":
@@ -252,7 +276,7 @@ def run_agent(
     history: list[dict],
     data: GemsData,
     model: str | None = None,
-    max_iters: int = 8,
+    max_iters: int = 15,
 ) -> dict:
     client = get_llm_client()
     model_name = model or get_llm_model()
@@ -268,12 +292,23 @@ def run_agent(
     state: dict = {}
 
     for _ in range(max_iters):
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            tools=TOOLS,
-            temperature=0.2,
-        )
+        try:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+        except Exception as e:
+            return {
+                "answer": (
+                    "Chat agent failed before it could query data. "
+                    f"Model `{model_name}` returned: {e}"
+                ),
+                "tool_calls": tool_calls_log,
+                "plot_spec": state.get("last_plot"),
+            }
         msg = resp.choices[0].message
 
         if not msg.tool_calls:

@@ -22,7 +22,7 @@ Keep two Azure App Services:
 - `gems-dashboard`
   - Streamlit web app.
   - Auth0 sign-in through Azure App Service Authentication / Easy Auth.
-  - In-app allowlist via `ALLOWED_USERS` / `ALLOWED_DOMAINS`.
+  - In-app dashboard allowlist via `ALLOWED_USERS`.
   - API Access page for generating/revoking user API keys.
 
 - `GEMS-API`
@@ -80,7 +80,7 @@ flowchart LR
     A0 --> EA
     EA --> D
 
-    D --> AL[Dashboard Allowlist<br/>ALLOWED_USERS / ALLOWED_DOMAINS]
+    D --> AL[Dashboard Allowlist<br/>ALLOWED_USERS]
     AL --> K[API Access Page]
     K --> TS[(Azure Table Storage<br/>gemsApiKeys)]
 
@@ -106,7 +106,7 @@ sequenceDiagram
     User->>Dash: Open dashboard
     Dash->>Auth0: Redirect through Easy Auth
     Auth0-->>Dash: Signed-in identity headers
-    Dash->>Dash: Check ALLOWED_USERS / ALLOWED_DOMAINS
+    Dash->>Dash: Check ALLOWED_USERS
     User->>Dash: Open API Access page
     Dash->>Dash: require_authorized_user()
     User->>Dash: Generate API key
@@ -132,7 +132,7 @@ The dashboard uses:
 
 - Auth0 as the identity provider,
 - Azure App Service Authentication / Easy Auth as the web-app authentication layer,
-- `ALLOWED_USERS` / `ALLOWED_DOMAINS` as the in-app data access gate.
+- `ALLOWED_USERS` as the in-app dashboard data access gate.
 
 Users who are signed in but not allowlisted can see the general dashboard shell/home page, but cannot access:
 
@@ -158,7 +158,7 @@ The API validates keys by:
 3. hashing the submitted key with `API_KEY_PEPPER`,
 4. looking up the hash in Azure Table Storage,
 5. confirming the key is not revoked,
-6. optionally confirming the owner is still in `ALLOWED_USERS` / `ALLOWED_DOMAINS` on the API app,
+6. confirming the owner is still in `ALLOWED_API_USERS` on the API app,
 7. allowing the request.
 
 There is no old shared `GEMS_API_KEY` fallback.
@@ -280,11 +280,8 @@ DATABRICKS_TOKEN=<Databricks PAT>
 GEMS_CATALOG=gems_catalog
 GEMS_SCHEMA=gold_v1
 ALLOWED_TABLES=goldanimalcharacteristics,goldbodyweight,...
-OPENAI_API_KEY=<if chat/AI features are used>
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_CHAT_MODEL=gpt-4o
+DATABRICKS_LLM_ENDPOINT=databricks-claude-opus-4-7
 ALLOWED_USERS=<comma-separated authorized emails>
-ALLOWED_DOMAINS=<optional comma-separated domains>
 ```
 
 Authentication for `gems-dashboard`:
@@ -319,11 +316,10 @@ MAX_EXPORT_ROWS=100000
 Recommended:
 
 ```text
-ALLOWED_USERS=<same as dashboard>
-ALLOWED_DOMAINS=<same as dashboard, if used>
+ALLOWED_API_USERS=<comma-separated API-tier emails>
 ```
 
-If `ALLOWED_USERS` / `ALLOWED_DOMAINS` are set on the API app, the API rejects keys whose owners are no longer authorized.
+If `ALLOWED_API_USERS` is empty or the owner is not included, the API rejects the key.
 
 Authentication for `GEMS-API`:
 
@@ -653,7 +649,7 @@ Likely causes:
 
 ### API returns 403: key owner no longer authorized
 
-The API app has `ALLOWED_USERS` / `ALLOWED_DOMAINS` configured and the key owner is not included.
+The API app has `ALLOWED_API_USERS` empty or the key owner is not included.
 
 Fix the allowlist on `GEMS-API`, or intentionally leave the key blocked.
 

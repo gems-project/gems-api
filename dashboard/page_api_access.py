@@ -6,6 +6,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pandas as pd
+import requests
 import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -13,8 +14,8 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from gems_api_keys import ApiKeyStore  # noqa: E402
 from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_ui import page_header, sidebar_user  # noqa: E402
-
-st.set_page_config(page_title="API Access · GEMS", layout="wide", page_icon="🔑")
+from permissions import has_api_access  # noqa: E402
+st.set_page_config(page_title="API Access", layout="wide", page_icon="key")
 page_header(
     "API Access",
     "Generate API keys and use version-aware scripts to query or refresh GEMS data.",
@@ -37,6 +38,30 @@ if not api_base_url:
         "environment variables so users see working examples."
     )
 
+if not has_api_access(user_info, user_info.bearer_token):
+    st.warning(
+        f"Your account ({user_info.email}) has dashboard access but is not in the API tier. "
+        "To request API key access, contact the GEMS team. The administrator must add "
+        "your email to ALLOWED_API_USERS on gems-api."
+    )
+    st.stop()
+
+try:
+    resp = requests.get(
+        f"{api_base_url}/authz/me",
+        headers={"Authorization": f"Bearer {user_info.bearer_token}"},
+        timeout=5,
+    )
+    if resp.status_code in (401, 403):
+        st.error(
+            "Your email is allowed by the dashboard but the API rejected your token. "
+            "Confirm the same email is in gems-api ALLOWED_API_USERS, then redeploy the gems-api Web App."
+        )
+        st.stop()
+except requests.RequestException as exc:
+    st.error(f"Could not reach the API service: {exc}")
+    st.stop()
+
 store = ApiKeyStore()
 
 if not store.enabled:
@@ -50,7 +75,7 @@ if not store.enabled:
 
 st.markdown(
     "Create an API key for Python, R, curl, or other tools. Keys are shown only once. "
-    "Only allowlisted dashboard users can access this page."
+    "Only API-tier users can access this page."
 )
 
 with st.form("create_api_key"):

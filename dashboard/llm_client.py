@@ -6,7 +6,7 @@ from functools import lru_cache
 from openai import OpenAI
 
 DEFAULT_DATABRICKS_LLM_ENDPOINT = "databricks-claude-haiku-4-5"
-LLM_MODEL = os.environ.get("DATABRICKS_LLM_ENDPOINT", DEFAULT_DATABRICKS_LLM_ENDPOINT)
+DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o"
 
 
 def _databricks_host() -> str:
@@ -41,9 +41,10 @@ def get_llm_client() -> OpenAI:
 
 
 def get_llm_model() -> str:
-    if os.environ.get("DATABRICKS_LLM_ENDPOINT", "").strip():
-        return LLM_MODEL
-    return DEFAULT_DATABRICKS_LLM_ENDPOINT
+    endpoint = os.environ.get("DATABRICKS_LLM_ENDPOINT", "").strip()
+    if endpoint:
+        return endpoint
+    return os.environ.get("OPENAI_CHAT_MODEL", DEFAULT_OPENAI_CHAT_MODEL).strip() or DEFAULT_OPENAI_CHAT_MODEL
 
 
 def check_llm_endpoint() -> None:

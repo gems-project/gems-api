@@ -9,11 +9,12 @@ import io
 import os
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -30,6 +31,15 @@ _IDENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _SINCE_VALUE_RE = re.compile(r"^[0-9A-Za-z\-:.+ ]{1,64}$")
 _API_KEY_PREFIX = "gems_live_"
 _API_KEY_PARTITION = "api_key"
+
+
+class GemsSchema(str, Enum):
+    gold_v1 = "gold_v1"
+    gold_v2 = "gold_v2"
+    gold_v3 = "gold_v3"
+
+
+ALLOWED_SCHEMAS = tuple(schema.value for schema in GemsSchema)
 
 
 @app.get("/")
@@ -53,20 +63,44 @@ def _cfg() -> dict:
         "http_path": os.getenv("DATABRICKS_HTTP_PATH", "").strip(),
         "token": os.getenv("DATABRICKS_TOKEN", "").strip(),
         "catalog": os.getenv("GEMS_CATALOG", "gems_catalog").strip(),
-        "schema": os.getenv("GEMS_SCHEMA", "gold_v1").strip(),
+        "schema": _default_schema(),
         "allowed": _parse_allowed_tables(os.getenv("ALLOWED_TABLES", "")),
         "max_rows": int(os.getenv("MAX_EXPORT_ROWS", "100000")),
         "tables_conn": os.getenv("AZURE_TABLES_CONNECTION_STRING", "").strip(),
         "api_keys_table": os.getenv("AZURE_API_KEYS_TABLE", "gemsApiKeys").strip(),
         "api_key_pepper": os.getenv("API_KEY_PEPPER", "").strip(),
-        "allowed_users": _parse_allowed_users(os.getenv("ALLOWED_USERS", "")),
-        "allowed_domains": _parse_allowed_users(os.getenv("ALLOWED_DOMAINS", "")),
+        "allowed_api_users": _parse_allowed_users(os.getenv("ALLOWED_API_USERS", "")),
     }
 
 
 def _parse_allowed_tables(raw: str) -> frozenset[str]:
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     return frozenset(parts)
+
+
+def _default_schema() -> str:
+    schema = os.getenv("GEMS_SCHEMA", GemsSchema.gold_v1.value).strip()
+    if schema not in ALLOWED_SCHEMAS:
+        return GemsSchema.gold_v1.value
+    return schema
+
+
+def _schema_value(schema: GemsSchema | str | None = None) -> str:
+    return (schema or _cfg()["schema"]).value if isinstance(schema, GemsSchema) else str(schema or _cfg()["schema"])
+
+
+def _is_missing_table_error(e: Exception) -> bool:
+    message = str(e).lower()
+    return any(
+        marker in message
+        for marker in (
+            "table_or_view_not_found",
+            "table or view not found",
+            "table not found",
+            "not found",
+            "does not exist",
+        )
+    )
 
 
 def _parse_allowed_users(raw: str) -> frozenset[str]:
@@ -76,15 +110,50 @@ def _parse_allowed_users(raw: str) -> frozenset[str]:
 
 def _owner_is_authorized(owner: str) -> bool:
     c = _cfg()
-    allowed_users = c["allowed_users"]
-    allowed_domains = c["allowed_domains"]
-    if not allowed_users and not allowed_domains:
-        return True
+    allowed_api_users = c["allowed_api_users"]
+    if not allowed_api_users:
+        return False
     normalized = (owner or "").strip().lower()
-    if normalized in allowed_users:
+    if normalized in allowed_api_users:
         return True
-    domain = normalized.rsplit("@", 1)[-1] if "@" in normalized else ""
-    return bool(domain) and domain in allowed_domains
+    return False
+
+
+def _bearer_email(authorization: str | None) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(401, "Missing bearer token")
+
+    domain = os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
+    audience = os.getenv("AUTH0_AUDIENCE", "").strip() or None
+    if not domain:
+        # TODO: In production, set AUTH0_DOMAIN and validate JWT signature/issuer/audience.
+        return os.getenv("LOCAL_DEV_AUTHZ_EMAIL", "")
+
+    try:
+        from jose import jwt
+
+        jwks = requests.get(f"https://{domain}/.well-known/jwks.json", timeout=10).json()
+        header = jwt.get_unverified_header(token)
+        key = next((item for item in jwks["keys"] if item.get("kid") == header.get("kid")), None)
+        if key is None:
+            raise HTTPException(401, "Unknown token signing key")
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=f"https://{domain}/",
+            options={"verify_aud": bool(audience)},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(401, f"Invalid bearer token: {e!s}") from e
+
+    return str(claims.get("email") or claims.get("upn") or claims.get("preferred_username") or "").lower()
 
 
 def _utc_now() -> str:
@@ -169,10 +238,11 @@ def _connect_db():
     )
 
 
-def _describe_columns(table: str) -> list[dict]:
+def _describe_columns(table: str, schema: GemsSchema | str | None = None) -> list[dict]:
     """Return [{'name','type'}, ...] via DESCRIBE TABLE on an allowlisted fully-qualified table."""
     c = _cfg()
-    fq = f"{c['catalog']}.{c['schema']}.{table}"
+    schema_name = _schema_value(schema)
+    fq = f"{c['catalog']}.{schema_name}.{table}"
     try:
         conn = _connect_db()
         cur = conn.cursor()
@@ -183,6 +253,8 @@ def _describe_columns(table: str) -> list[dict]:
             cur.close()
             conn.close()
     except Exception as e:
+        if _is_missing_table_error(e):
+            return []
         raise HTTPException(502, f"Databricks DESCRIBE failed: {e!s}") from e
 
     cols: list[dict] = []
@@ -196,12 +268,12 @@ def _describe_columns(table: str) -> list[dict]:
     return cols
 
 
-def _validate_since_column(table: str, col: str) -> dict:
+def _validate_since_column(table: str, col: str, schema: GemsSchema | str | None = None) -> dict:
     """Ensure `col` exists on `table` and return its column info (name, type)."""
     if not _IDENT_RE.match(col):
         raise HTTPException(400, "Invalid since_col")
-    schema = _describe_columns(table)
-    for c in schema:
+    schema_cols = _describe_columns(table, schema)
+    for c in schema_cols:
         if c["name"] == col:
             return c
     raise HTTPException(400, f"Column '{col}' not found on table '{table}'")
@@ -238,19 +310,35 @@ def health():
         and c["api_keys_table"]
         and c["api_key_pepper"]
     )
-    return {"status": "ok" if ok else "degraded", "allowed_table_count": len(c["allowed"])}
+    return {"status": "ok" if ok else "degraded", "allowed_table_count": len(c["allowed"]), "schemas": list(ALLOWED_SCHEMAS)}
 
 
 @app.get("/tables")
 def list_tables(_: Annotated[str, Depends(get_api_key)]):
     """Tables this API key may export (allowlist)."""
-    return {"tables": sorted(_cfg()["allowed"])}
+    c = _cfg()
+    return {"catalog": c["catalog"], "schemas": list(ALLOWED_SCHEMAS), "tables": sorted(c["allowed"])}
 
 
-def _table_version(table: str) -> dict:
+@app.get("/authz/me")
+def authz_me(authorization: Annotated[str | None, Header()] = None):
+    email = _bearer_email(authorization)
+    return {"api_access": _owner_is_authorized(email), "email": email}
+
+
+@app.get("/authz/allowed-users")
+def authz_allowed_users(x_dashboard_authz_secret: Annotated[str | None, Header()] = None):
+    expected = os.getenv("DASHBOARD_API_AUTHZ_SECRET", "").strip()
+    if not expected or x_dashboard_authz_secret != expected:
+        raise HTTPException(401, "Unauthorized")
+    return {"allowed_users": sorted(_cfg()["allowed_api_users"])}
+
+
+def _table_version(table: str, schema: GemsSchema | str | None = None) -> dict:
     t = _validate_table_name(table)
     c = _cfg()
-    fq = f"{c['catalog']}.{c['schema']}.{t}"
+    schema_name = _schema_value(schema)
+    fq = f"{c['catalog']}.{schema_name}.{t}"
     try:
         conn = _connect_db()
         cur = conn.cursor()
@@ -262,6 +350,16 @@ def _table_version(table: str) -> dict:
             cur.close()
             conn.close()
     except Exception as e:
+        if _is_missing_table_error(e):
+            return {
+                "table": t,
+                "catalog": c["catalog"],
+                "schema": schema_name,
+                "version": None,
+                "timestamp": None,
+                "operation": None,
+                "message": f"No data found for table '{t}' in schema '{schema_name}'",
+            }
         raise HTTPException(502, f"Databricks table history lookup failed: {e!s}") from e
 
     if not rows:
@@ -271,7 +369,7 @@ def _table_version(table: str) -> dict:
     return {
         "table": t,
         "catalog": c["catalog"],
-        "schema": c["schema"],
+        "schema": schema_name,
         "version": _json_safe(row.get("version")),
         "timestamp": _json_safe(row.get("timestamp")),
         "operation": _json_safe(row.get("operation")),
@@ -279,23 +377,27 @@ def _table_version(table: str) -> dict:
 
 
 @app.get("/version/{table}")
-def get_version(table: str, _: Annotated[dict, Depends(get_api_key)]):
+def get_version(table: str, _: Annotated[dict, Depends(get_api_key)], schema: GemsSchema = Query(GemsSchema.gold_v1)):
     """Return the latest Delta table version for one allowlisted gold table."""
-    return _table_version(table)
+    return _table_version(table, schema)
 
 
 @app.get("/versions")
-def get_versions(_: Annotated[dict, Depends(get_api_key)]):
+def get_versions(_: Annotated[dict, Depends(get_api_key)], schema: GemsSchema = Query(GemsSchema.gold_v1)):
     """Return latest Delta table versions for all allowlisted gold tables."""
-    versions = [_table_version(table) for table in sorted(_cfg()["allowed"])]
-    return {"tables": versions}
+    versions = [_table_version(table, schema) for table in sorted(_cfg()["allowed"])]
+    return {"schema": schema.value, "tables": versions}
 
 
 @app.get("/schema/{table}")
-def get_schema(table: str, _: Annotated[str, Depends(get_api_key)]):
+def get_schema(table: str, _: Annotated[str, Depends(get_api_key)], schema: GemsSchema = Query(GemsSchema.gold_v1)):
     """Return column name/type list for an allowlisted table."""
     t = _validate_table_name(table)
-    return {"table": t, "columns": _describe_columns(t)}
+    columns = _describe_columns(t, schema)
+    response = {"table": t, "schema": schema.value, "columns": columns}
+    if not columns:
+        response["message"] = f"No data found for table '{t}' in schema '{schema.value}'"
+    return response
 
 
 @app.get("/preview/{table}")
@@ -303,11 +405,13 @@ def preview(
     table: str,
     _: Annotated[str, Depends(get_api_key)],
     limit: int = Query(100, ge=1, le=1000),
+    schema: GemsSchema = Query(GemsSchema.gold_v1),
 ):
     """Return up to `limit` rows as JSON for quick browsing."""
     t = _validate_table_name(table)
     c = _cfg()
-    fq = f"{c['catalog']}.{c['schema']}.{t}"
+    schema_name = schema.value
+    fq = f"{c['catalog']}.{schema_name}.{t}"
     sql = f"SELECT * FROM {fq} LIMIT {int(limit)}"
     try:
         conn = _connect_db()
@@ -320,10 +424,18 @@ def preview(
             cur.close()
             conn.close()
     except Exception as e:
+        if _is_missing_table_error(e):
+            return {
+                "table": t,
+                "schema": schema_name,
+                "columns": [],
+                "rows": [],
+                "message": f"No data found for table '{t}' in schema '{schema_name}'",
+            }
         raise HTTPException(502, f"Databricks query failed: {e!s}") from e
 
     data = [dict(zip(columns, [_json_safe(v) for v in r], strict=False)) for r in rows]
-    return {"table": t, "columns": columns, "rows": data}
+    return {"table": t, "schema": schema_name, "columns": columns, "rows": data}
 
 
 def _json_safe(v):
@@ -347,6 +459,7 @@ def export_csv(
     _: Annotated[str, Depends(get_api_key)],
     since_col: str | None = Query(None, description="Optional watermark column (must exist on table)"),
     since_value: str | None = Query(None, description="Return rows WHERE since_col > since_value"),
+    schema: GemsSchema = Query(GemsSchema.gold_v1),
 ):
     """
     Download allowlisted table as CSV. Latest snapshot from Databricks (warehouse sees current Delta state).
@@ -354,11 +467,12 @@ def export_csv(
     """
     t = _validate_table_name(table)
     c = _cfg()
-    fq = f"{c['catalog']}.{c['schema']}.{t}"
+    schema_name = schema.value
+    fq = f"{c['catalog']}.{schema_name}.{t}"
 
     where = ""
     if since_col and since_value is not None:
-        col_info = _validate_since_column(t, since_col)
+        col_info = _validate_since_column(t, since_col, schema)
         literal = _format_since_literal(since_value, col_info["type"])
         where = f" WHERE {since_col} > {literal}"
     elif since_col or since_value:
@@ -371,6 +485,13 @@ def export_csv(
         cur = conn.cursor()
         cur.execute(sql)
     except Exception as e:
+        if _is_missing_table_error(e):
+            header = f"message\r\nNo data found for table '{t}' in schema '{schema_name}'\r\n"
+            return StreamingResponse(
+                iter([header]),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{t}.csv"'},
+            )
         raise HTTPException(502, f"Databricks query failed: {e!s}") from e
 
     columns = [col[0] for col in cur.description] if cur.description else []
@@ -418,6 +539,7 @@ _FORBIDDEN_SQL = re.compile(
 class QueryRequest(BaseModel):
     sql: str = Field(..., min_length=1, max_length=20_000)
     limit: int | None = Field(default=1000, ge=1, le=100_000)
+    schema_: GemsSchema = Field(default=GemsSchema.gold_v1, alias="schema")
 
 
 def _validate_select_sql(sql: str, allowed: frozenset[str], catalog: str, schema: str) -> str:
@@ -487,7 +609,8 @@ def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
       - hard row cap (wrapped in an outer LIMIT)
     """
     c = _cfg()
-    safe = _validate_select_sql(req.sql, c["allowed"], c["catalog"], c["schema"])
+    schema_name = req.schema_.value
+    safe = _validate_select_sql(req.sql, c["allowed"], c["catalog"], schema_name)
 
     requested = int(req.limit or 1000)
     limit = min(requested, c["max_rows"])
@@ -506,10 +629,21 @@ def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
     except HTTPException:
         raise
     except Exception as e:
+        if _is_missing_table_error(e):
+            return {
+                "schema": schema_name,
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "limit_applied": limit,
+                "truncated": False,
+                "message": f"No data found in schema '{schema_name}' for the requested query",
+            }
         raise HTTPException(502, f"Databricks query failed: {e!s}") from e
 
     data = [dict(zip(columns, [_json_safe(v) for v in r], strict=False)) for r in rows]
     return {
+        "schema": schema_name,
         "columns": columns,
         "rows": data,
         "row_count": len(data),
