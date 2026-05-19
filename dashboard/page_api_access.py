@@ -127,7 +127,7 @@ else:
     st.info("No API keys yet.")
 
 st.markdown("### API connection details")
-base_display = api_base_url or "https://YOUR-GEMS-API.azurewebsites.net"
+base_display = api_base_url or "https://gems-api.bovi-analytics.org"
 docs_display = f"{base_display}/docs"
 st.code(base_display, language="text")
 st.markdown("Interactive API documentation:")

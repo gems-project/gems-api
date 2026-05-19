@@ -1,0 +1,12 @@
+# Paste into Auth0 → Applications → GEMS dashboard app (client MHYamdXz76XbRnzxr3ZVLbvL48Sboej2)
+# Tenant: dev-1bd3bttgj2px61zz.us.auth0.com
+# Keep both hosts during transition; comma-separated, one line per field in Auth0 UI.
+
+Allowed Callback URLs:
+https://gems.bovi-analytics.org/.auth/login/auth0/callback,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net/.auth/login/auth0/callback
+
+Allowed Logout URLs:
+https://gems.bovi-analytics.org,https://gems.bovi-analytics.org/.auth/logout,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net/.auth/logout
+
+Allowed Web Origins:
+https://gems.bovi-analytics.org,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net
