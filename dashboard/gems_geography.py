@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Country/region hints extracted from affiliation text (order = preference when ambiguous).
 _COUNTRY_HINTS: list[tuple[str, str]] = [
@@ -28,14 +29,36 @@ _COUNTRY_HINTS: list[tuple[str, str]] = [
     ("austria", "Austria"),
 ]
 
-# Word-boundary fallbacks (longer keys first). Avoid bare "eth" matching inside unrelated words.
+# institution_key -> preferred geocode search string
+_KNOWN_INSTITUTION_QUERIES: dict[str, str] = {
+    "cornelluniversity": "Cornell University, Ithaca, New York, United States",
+    "universityofcaliforniadavis": "University of California, Davis, California, United States",
+    "universityofguelph": "University of Guelph, Ontario, Canada",
+    "universityofnewengland": "University of New England, Armidale, New South Wales, Australia",
+    "agricultureandagrifoodcanada": "Agriculture and Agri-Food Canada, Ottawa, Canada",
+    "agricultureagrifoodcanada": "Agriculture and Agri-Food Canada, Ottawa, Canada",
+    "universitacattolicadelsacrocuore": "Università Cattolica del Sacro Cuore, Piacenza, Italy",
+    "universitcattolicadelsacrocuore": "Università Cattolica del Sacro Cuore, Piacenza, Italy",
+    "researchinstituteforfarmanimalbiologyfbn": (
+        "Research Institute for Farm Animal Biology (FBN), Dummerstorf, Germany"
+    ),
+    "researchinstituteforfarmanimalbiology": (
+        "Research Institute for Farm Animal Biology (FBN), Dummerstorf, Germany"
+    ),
+    "ethzurich": "ETH Zurich, Zurich, Switzerland",
+}
+
+# Word-boundary fallbacks (longer keys first).
 _LOCATION_FALLBACKS: list[tuple[str, dict]] = [
+    ("farmanimal biology", {"lat": 53.85, "lon": 12.23, "country": "Germany"}),
+    ("fbn", {"lat": 53.85, "lon": 12.23, "country": "Germany"}),
+    ("cattolica del sacro cuore", {"lat": 45.05, "lon": 9.70, "country": "Italy"}),
+    ("sacro cuore", {"lat": 45.05, "lon": 9.70, "country": "Italy"}),
     ("lethbridge", {"lat": 49.6940, "lon": -112.8328, "country": "Canada"}),
     ("agri-food canada", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
     ("agriculture and agri-food", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
     ("university of guelph", {"lat": 43.5448, "lon": -80.2482, "country": "Canada"}),
     ("guelph", {"lat": 43.5448, "lon": -80.2482, "country": "Canada"}),
-    ("ottawa", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
     ("cornell", {"lat": 42.4534, "lon": -76.4735, "country": "United States"}),
     ("ithaca", {"lat": 42.4430, "lon": -76.5019, "country": "United States"}),
     ("university of california", {"lat": 38.5449, "lon": -121.7405, "country": "United States"}),
@@ -47,12 +70,38 @@ _LOCATION_FALLBACKS: list[tuple[str, dict]] = [
     ("switzerland", {"lat": 46.8182, "lon": 8.2275, "country": "Switzerland"}),
     ("australia", {"lat": -25.2744, "lon": 133.7751, "country": "Australia"}),
     ("canada", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
+    ("italy", {"lat": 41.8719, "lon": 12.5674, "country": "Italy"}),
+    ("germany", {"lat": 51.1657, "lon": 10.4515, "country": "Germany"}),
     ("united states", {"lat": 39.8283, "lon": -98.5795, "country": "United States"}),
 ]
 
+# Split ASCII/latin camelCase without breaking accented letters (e.g. Università).
 _CAMEL_BOUNDARY = re.compile(
-    r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-zA-Z])(?=[0-9])|(?<=[0-9])(?=[a-zA-Z])"
+    r"(?<=[a-z\xe0-\xff])(?=[A-Z\xc0-\xd6\xd8-\xde])|"
+    r"(?<=[A-Z\xc0-\xd6\xd8-\xde])(?=[A-Z\xc0-\xd6\xd8-\xde][a-z\xe0-\xff])|"
+    r"(?<=[a-zA-Z\xe0-\xff])(?=[0-9])|(?<=[0-9])(?=[a-zA-Z\xe0-\xff])"
 )
+_SMALL_WORDS = {
+    "of",
+    "and",
+    "for",
+    "the",
+    "del",
+    "della",
+    "de",
+    "di",
+    "da",
+    "van",
+    "von",
+    "du",
+}
+
+
+def institution_key(label: str) -> str:
+    """Stable dedupe key for partner lists (ignores case/punctuation)."""
+    text = unicodedata.normalize("NFKD", label or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
 def split_camel_case(text: str) -> str:
@@ -60,15 +109,44 @@ def split_camel_case(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
         return ""
-    if " " in raw or "," in raw:
-        return " ".join(raw.replace(",", " ").split())
+    raw = raw.replace("&", " and ")
+    raw = re.sub(r"\s*\(\s*", " (", raw)
+    raw = re.sub(r"\s+", " ", raw)
+    if " " in raw and not _CAMEL_BOUNDARY.search(raw):
+        return _titleize_words(raw)
     spaced = _CAMEL_BOUNDARY.sub(" ", raw)
-    return " ".join(spaced.split())
+    return _titleize_words(spaced)
+
+
+def _titleize_words(text: str) -> str:
+    parts = []
+    for word in text.split():
+        low = word.lower()
+        if low in _SMALL_WORDS:
+            parts.append(low)
+        elif word.isupper() and len(word) <= 4:
+            parts.append(word)
+        else:
+            parts.append(word[:1].upper() + word[1:])
+    return " ".join(parts)
 
 
 def humanize_affiliation(affiliation: str) -> str:
     """Readable label for map popups and institution lists."""
     return split_camel_case(affiliation)
+
+
+def dedupe_institution_labels(labels: list[str]) -> list[str]:
+    """Keep one display name per institution (e.g. one Cornell University)."""
+    best: dict[str, str] = {}
+    for label in labels:
+        key = institution_key(label)
+        if not key:
+            continue
+        prev = best.get(key)
+        if prev is None or len(label) > len(prev):
+            best[key] = label
+    return sorted(best.values(), key=lambda s: s.lower())
 
 
 def preferred_country(affiliation: str) -> str | None:
@@ -77,11 +155,18 @@ def preferred_country(affiliation: str) -> str | None:
     for needle, country in _COUNTRY_HINTS:
         if re.search(rf"\b{re.escape(needle)}\b", lowered):
             return country
+    if "università" in lowered or "cattolica" in lowered or "sacro cuore" in lowered:
+        return "Italy"
+    if "fbn" in lowered or "farmanimal biology" in lowered or "farm animal biology" in lowered:
+        return "Germany"
     return None
 
 
 def geocode_query(affiliation: str) -> str:
-    """Build a Nominatim-friendly query from camelCase affiliation."""
+    """Build a Nominatim-friendly query from affiliation text."""
+    key = institution_key(humanize_affiliation(affiliation))
+    if key in _KNOWN_INSTITUTION_QUERIES:
+        return _KNOWN_INSTITUTION_QUERIES[key]
     text = humanize_affiliation(affiliation)
     if text.lower() == "cornell":
         return "Cornell University, Ithaca, New York, United States"
@@ -92,42 +177,18 @@ def geocode_query(affiliation: str) -> str:
 
 
 def fallback_coordinates(affiliation: str) -> dict | None:
-    """Keyword fallbacks with word boundaries (avoids 'eth' inside unrelated strings)."""
+    """Keyword fallbacks with word boundaries."""
+    key = institution_key(humanize_affiliation(affiliation))
+    if key in _KNOWN_INSTITUTION_QUERIES:
+        query = _KNOWN_INSTITUTION_QUERIES[key].lower()
+        for phrase, coords in _LOCATION_FALLBACKS:
+            if phrase in query:
+                return dict(coords)
     normalized = humanize_affiliation(affiliation).lower()
     country = preferred_country(affiliation)
-    for key, coords in _LOCATION_FALLBACKS:
-        if re.search(rf"\b{re.escape(key)}\b", normalized):
+    for phrase, coords in _LOCATION_FALLBACKS:
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
             if country and coords.get("country") and coords["country"] != country:
                 continue
             return dict(coords)
     return None
-
-
-def geocode_affiliation(
-    affiliation: str,
-    cache: dict,
-    geocode_fn,
-    *,
-    write_cache,
-) -> dict | None:
-    """Resolve one affiliation to lat/lon using cache, live geocode, then fallback."""
-    key = (affiliation or "").strip()
-    if not key:
-        return None
-    cached = cache.get(key)
-    if cached is None:
-        cached = geocode_fn(geocode_query(key))
-        if cached:
-            cache[key] = cached
-            write_cache(cache)
-    if cached is None:
-        cached = fallback_coordinates(key)
-        if cached:
-            cached = {
-                "lat": float(cached["lat"]),
-                "lon": float(cached["lon"]),
-                "country": cached.get("country"),
-            }
-            cache[key] = cached
-            write_cache(cache)
-    return cached

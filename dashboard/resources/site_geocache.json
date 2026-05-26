@@ -4,20 +4,50 @@
     "lat": 45.4215,
     "lon": -75.6972
   },
+  "Agriculture&AgriFoodCanada": {
+    "country": "Canada",
+    "label": "Agriculture&Agri Food Canada",
+    "lat": 45.3649876,
+    "lon": -75.7353526
+  },
   "Cornell": {
     "country": "United States",
     "lat": 42.4534,
     "lon": -76.4735
+  },
+  "Cornell University": {
+    "country": "United States",
+    "label": "Cornell University",
+    "lat": 42.4529076,
+    "lon": -76.4800842
   },
   "Cornell University, Ithaca, United States": {
     "country": "United States",
     "lat": 42.4534,
     "lon": -76.4735
   },
+  "CornellUniversity": {
+    "country": "United States",
+    "label": "Cornell University",
+    "lat": 42.4529076,
+    "lon": -76.4800842
+  },
   "ETH Zurich, Zurich, Switzerland": {
     "country": "Switzerland",
     "lat": 47.3769,
     "lon": 8.5417
+  },
+  "ResearchInstituteForFarmAnimalBiology(FBN)": {
+    "country": "Germany",
+    "label": "Research Institute for Farm Animal Biology (FBN)",
+    "lat": 53.85,
+    "lon": 12.23
+  },
+  "University of California, Davis": {
+    "country": "United States",
+    "label": "University of California Davis",
+    "lat": 38.5337904,
+    "lon": -121.7907544
   },
   "University of California, Davis, United States": {
     "country": "United States",
@@ -33,5 +63,17 @@
     "country": "Australia",
     "lat": -30.5126,
     "lon": 151.665
+  },
+  "UniversityOfNewEngland": {
+    "country": "United States",
+    "label": "University Of New England",
+    "lat": 43.4572089,
+    "lon": -70.3833235
+  },
+  "Universit\u00e0CattolicaDelSacroCuore": {
+    "country": "Italia",
+    "label": "Universit\u00e0 Cattolica del Sacro Cuore",
+    "lat": 45.0368414,
+    "lon": 9.727151
   }
 }

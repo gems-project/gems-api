@@ -39,9 +39,11 @@ from gems_logo_data import (  # noqa: E402
     GLOBAL_METHANE_HUB_PNG_B64,
 )
 from gems_geography import (  # noqa: E402
+    dedupe_institution_labels,
     fallback_coordinates as _geo_fallback_coordinates,
     geocode_query as _geo_geocode_query,
     humanize_affiliation,
+    institution_key,
 )
 from gems_ui import apply_theme, render_html, sidebar_user  # noqa: E402
 from llm_client import check_llm_endpoint  # noqa: E402
@@ -91,6 +93,7 @@ def _clean_b64(s: str) -> str:
 
 _HOME_CATALOG = os.environ.get("GEMS_CATALOG", "gems_catalog")
 _HOME_SCHEMA = os.environ.get("GEMS_SCHEMA", "gold_v1")
+_BRONZE_SCHEMA = os.environ.get("GEMS_BRONZE_SCHEMA", "gems_schema")
 _RESOURCES_DIR = _DASHBOARD_ROOT / "resources"
 _SITE_GEOCACHE_PATH = _RESOURCES_DIR / "site_geocache.json"
 _CONSORTIUM_MEMBERS = [
@@ -125,8 +128,8 @@ def _home_connect():
     return dsql.connect(server_hostname=host, http_path=http_path, access_token=token)
 
 
-def _fq(table: str) -> str:
-    return f"`{_HOME_CATALOG}`.`{_HOME_SCHEMA}`.`{table}`"
+def _fq(table: str, schema: str | None = None) -> str:
+    return f"`{_HOME_CATALOG}`.`{schema or _HOME_SCHEMA}`.`{table}`"
 
 
 def _col(name: str) -> str:
@@ -138,10 +141,10 @@ def _norm_col(name: str) -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _table_columns(table: str) -> list[str]:
+def _table_columns(table: str, schema: str | None = None) -> list[str]:
     try:
         with _home_connect() as conn, conn.cursor() as cur:
-            cur.execute(f"DESCRIBE TABLE {_fq(table)}")
+            cur.execute(f"DESCRIBE TABLE {_fq(table, schema)}")
             rows = cur.fetchall()
         cols = []
         for row in rows:
@@ -153,8 +156,8 @@ def _table_columns(table: str) -> list[str]:
         return []
 
 
-def _resolve_col(table: str, *candidates: str) -> str | None:
-    columns = _table_columns(table)
+def _resolve_col(table: str, *candidates: str, schema: str | None = None) -> str | None:
+    columns = _table_columns(table, schema)
     by_norm = {_norm_col(col): col for col in columns}
     for candidate in candidates:
         resolved = by_norm.get(_norm_col(candidate))
@@ -229,7 +232,7 @@ def _date_range_live():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _site_rows_live() -> list[dict]:
-    """Study counts by contributor affiliation (unique studyId per affiliation)."""
+    """Gold studies grouped by institution (distinct studyId per institution)."""
     table = "goldcontributor"
     study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
     affiliation_col = _resolve_col(table, "Affiliation", "affiliation")
@@ -239,54 +242,76 @@ def _site_rows_live() -> list[dict]:
         aff = _col(affiliation_col)
         with _home_connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT {aff}, COUNT(DISTINCT {_col(study_col)}) AS study_count "
+                f"SELECT {aff}, {_col(study_col)} "
                 f"FROM {_fq(table)} "
                 f"WHERE {aff} IS NOT NULL "
                 f"AND TRIM(CAST({aff} AS STRING)) <> '' "
-                f"GROUP BY {aff}"
+                f"AND {_col(study_col)} IS NOT NULL "
+                f"AND TRIM(CAST({_col(study_col)} AS STRING)) <> ''"
             )
             rows = cur.fetchall()
-        sites = []
+        study_sets: dict[str, set[str]] = {}
+        labels: dict[str, str] = {}
         for row in rows:
-            if not row or not str(row[0] or "").strip():
+            if not row or not str(row[0] or "").strip() or row[1] is None:
                 continue
             raw = str(row[0]).strip()
-            sites.append(
-                {
-                    "location": raw,
-                    "label": humanize_affiliation(raw),
-                    "study_count": int(row[1] or 0),
-                }
-            )
-        return sites
+            label = humanize_affiliation(raw)
+            key = institution_key(label)
+            if not key:
+                continue
+            labels.setdefault(key, label)
+            if len(label) > len(labels[key]):
+                labels[key] = label
+            study_sets.setdefault(key, set()).add(str(row[1]).strip())
+        return [
+            {
+                "cache_key": key,
+                "location": labels[key],
+                "label": labels[key],
+                "study_count": len(study_sets[key]),
+            }
+            for key in sorted(labels, key=lambda k: labels[k].lower())
+        ]
     except Exception:
         return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _partner_institutions_live() -> list[str]:
-    """Unique affiliation strings (not study-distinguished)."""
-    table = "goldcontributor"
-    affiliation_col = _resolve_col(table, "Affiliation", "affiliation")
+def _bronze_partner_institutions_live() -> list[str]:
+    """Unique partner affiliations from bronzecontributor (ingested, not QC'd)."""
+    table = "bronzecontributor"
+    affiliation_col = _resolve_col(table, "Affiliation", "affiliation", schema=_BRONZE_SCHEMA)
     if not affiliation_col:
         return []
     try:
         aff = _col(affiliation_col)
         with _home_connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT DISTINCT {aff} FROM {_fq(table)} "
-                f"WHERE {aff} IS NOT NULL AND TRIM(CAST({aff} AS STRING)) <> '' "
-                f"ORDER BY {aff}"
+                f"SELECT DISTINCT {aff} FROM {_fq(table, _BRONZE_SCHEMA)} "
+                f"WHERE {aff} IS NOT NULL AND TRIM(CAST({aff} AS STRING)) <> ''"
             )
             rows = cur.fetchall()
-        return [humanize_affiliation(str(row[0]).strip()) for row in rows if row and str(row[0] or "").strip()]
+        labels = [
+            humanize_affiliation(str(row[0]).strip())
+            for row in rows
+            if row and str(row[0] or "").strip()
+        ]
+        return dedupe_institution_labels(labels)
     except Exception:
         return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def _gold_study_institutions_live() -> list[str]:
+    """Institutions represented among gold studies (goldcontributor)."""
+    sites = _site_rows_live()
+    return [site["label"] for site in sites if site.get("label")]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def _institution_count_live():
-    partners = _partner_institutions_live()
+    partners = _bronze_partner_institutions_live()
     if partners:
         return len(partners)
     return None
@@ -402,27 +427,28 @@ def _geocode_sites(sites: list[dict]) -> list[dict]:
     changed = False
     located: list[dict] = []
     for site in sites:
-        location = site["location"]
-        cached = cache.get(location)
+        cache_key = site.get("cache_key") or institution_key(site.get("label") or site["location"])
+        label = site.get("label") or site["location"]
+        cached = cache.get(cache_key) or cache.get(site.get("location"))
         if cached is None:
-            cached = _geocode_one(location)
+            cached = _geocode_one(label)
             if cached:
-                cache[location] = cached
+                cache[cache_key] = cached
                 changed = True
         if cached is None:
-            fb = _fallback_coordinates(location)
+            fb = _fallback_coordinates(label)
             if fb:
                 cached = {
                     "lat": float(fb["lat"]),
                     "lon": float(fb["lon"]),
                     "country": fb.get("country"),
                 }
-                cache[location] = cached
+                cache[cache_key] = cached
                 changed = True
         if cached:
             located.append(
                 {
-                    "location": site.get("label") or humanize_affiliation(location),
+                    "location": label,
                     "study_count": site.get("study_count", 0),
                     "lat": float(cached["lat"]),
                     "lon": float(cached["lon"]),
@@ -447,21 +473,45 @@ def _render_stat_cards() -> None:
         f'<div class="l">Partner institutions</div></div>',
         unsafe_allow_html=True,
     )
-    partners = st.session_state.get("home_partner_institutions")
+    partners = st.session_state.get("home_bronze_partner_institutions")
     if partners is None:
-        partners = _partner_institutions_live()
+        partners = _bronze_partner_institutions_live()
         if partners:
-            st.session_state["home_partner_institutions"] = partners
+            st.session_state["home_bronze_partner_institutions"] = partners
     if partners:
         with sc1.popover("View partner institutions"):
-            st.markdown("**Unique affiliations** from `goldcontributor`:")
+            st.markdown("**Unique affiliations** from `bronzecontributor` (`gems_schema`):")
+            st.caption(
+                "Bronze = raw contributor records as ingested from data-entry templates "
+                "(complete submissions, not yet quality-checked into gold)."
+            )
             for name in partners:
                 st.markdown(f"- {name}")
     else:
         sc1.caption("Partner list loads from Databricks when available.")
 
+    sc2.markdown(
+        f'<div class="gems-stat"><div class="v">{studies}</div>'
+        f'<div class="l">Gold studies</div></div>',
+        unsafe_allow_html=True,
+    )
+    gold_inst = st.session_state.get("home_gold_study_institutions")
+    if gold_inst is None:
+        gold_inst = _gold_study_institutions_live()
+        if gold_inst:
+            st.session_state["home_gold_study_institutions"] = gold_inst
+    if gold_inst:
+        with sc2.popover("View gold study institutions"):
+            st.markdown("**Institutions in gold studies** from `goldcontributor` (`gold_v1`):")
+            study_n = st.session_state.get("home_stat_studies", studies)
+            st.caption(
+                "Gold = curated, quality-checked tables used for analysis and the map. "
+                f"{len(gold_inst)} institution(s) among {study_n} gold studies."
+            )
+            for name in gold_inst:
+                st.markdown(f"- {name}")
+
     for col, value, label in (
-        (sc2, studies, "Studies"),
         (sc3, animals, "Animals"),
         (sc4, date_range, "Date range"),
     ):
@@ -536,14 +586,20 @@ def _render_site_map() -> None:
     st_folium(fmap, height=390, use_container_width=True)
     if showing_cached:
         st.caption(
-            "Live affiliation data is unavailable; showing the last known site list or defaults. "
-            "Run `python tools_build_site_geocache.py` after deploy to refresh map coordinates."
+            "Live affiliation data is unavailable; showing the last known site list or defaults."
         )
     else:
-        st.caption(
-            "Study counts use distinct studyId per affiliation in `goldcontributor`; "
-            "coordinates come from the site geocache (camelCase affiliations are expanded before geocoding)."
-        )
+        mapped_studies = sum(site.get("study_count", 0) for site in located)
+        total_studies = sum(site.get("study_count", 0) for site in sites)
+        if mapped_studies < total_studies:
+            st.caption(
+                f"Map shows {mapped_studies:,} of {total_studies:,} gold studies "
+                f"({len(located)} institutions geocoded)."
+            )
+        else:
+            st.caption(
+                f"Map shows {mapped_studies:,} gold studies across {len(located)} institutions."
+            )
 
 
 _SITE_GEOCACHE = _read_site_geocache()

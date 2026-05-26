@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_client import get_llm_client, get_llm_model
+from llm_client import chat_completion, get_llm_model
 
 _PLOT_SYSTEM = (
     "You are a concise data analyst assisting livestock/animal-science researchers.\n"
@@ -24,7 +24,7 @@ _MODEL_SYSTEM = (
 
 
 def _chat(system: str, user: str) -> str:
-    resp = get_llm_client().chat.completions.create(
+    resp = chat_completion(
         model=get_llm_model(),
         messages=[
             {"role": "system", "content": system},

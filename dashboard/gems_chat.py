@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gems_data import GemsData, display_name
-from llm_client import get_llm_client, get_llm_model
+from llm_client import chat_completion, get_llm_client, get_llm_model
 
 _VISUAL_INTENT = re.compile(
     r"\b(plot|chart|graph|figure|distribution|histogram|box\s*plot|boxplot|"
@@ -290,7 +290,6 @@ def _verify_answer(
     if not has_aggregate or not evidence:
         return draft_answer
 
-    client = get_llm_client()
     prompt = (
         "You are a strict fact-checker. Given the user question, tool evidence, and a draft answer, "
         "return ONLY valid JSON: {\"ok\": true/false, \"revised_answer\": \"...\"}. "
@@ -301,7 +300,7 @@ def _verify_answer(
         f"Draft answer: {draft_answer}"
     )
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completion(
             model=model_name,
             messages=[
                 {"role": "system", "content": "Respond with JSON only."},
@@ -469,7 +468,7 @@ def run_agent(
 
     for _ in range(max_iters):
         try:
-            resp = client.chat.completions.create(
+            resp = chat_completion(
                 model=model_name,
                 messages=messages,
                 tools=TOOLS,

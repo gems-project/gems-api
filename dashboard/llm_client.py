@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from typing import Any
 
 from openai import OpenAI
 
@@ -18,9 +19,13 @@ def _databricks_host() -> str:
     return host.rstrip("/")
 
 
+def _is_databricks_endpoint() -> bool:
+    return bool(os.environ.get("DATABRICKS_LLM_ENDPOINT", "").strip())
+
+
 @lru_cache(maxsize=1)
 def get_llm_client() -> OpenAI:
-    if os.environ.get("DATABRICKS_LLM_ENDPOINT", "").strip():
+    if _is_databricks_endpoint():
         token = os.environ.get("DATABRICKS_TOKEN", "").strip()
         if not token:
             raise RuntimeError("DATABRICKS_TOKEN is not set")
@@ -47,9 +52,16 @@ def get_llm_model() -> str:
     return os.environ.get("OPENAI_CHAT_MODEL", DEFAULT_OPENAI_CHAT_MODEL).strip() or DEFAULT_OPENAI_CHAT_MODEL
 
 
+def chat_completion(**kwargs: Any):
+    """Databricks Claude serving endpoints reject the temperature parameter."""
+    if _is_databricks_endpoint():
+        kwargs.pop("temperature", None)
+    return get_llm_client().chat.completions.create(**kwargs)
+
+
 def check_llm_endpoint() -> None:
     try:
-        get_llm_client().chat.completions.create(
+        chat_completion(
             model=get_llm_model(),
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=4,
