@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from gems_data import GemsData, display_name
 from llm_client import get_llm_client, get_llm_model
+
+_VISUAL_INTENT = re.compile(
+    r"\b(plot|chart|graph|figure|distribution|histogram|box\s*plot|boxplot|"
+    r"scatter|bar\s*chart|line\s*chart|visuali[sz]e|trend|frequency)\b",
+    re.IGNORECASE,
+)
 
 _DATA_DICTIONARY_PATH = os.path.join(
     os.path.dirname(__file__), "resources", "data_dictionary.json"
@@ -75,7 +82,9 @@ Use tools to answer questions:
    and null percentages.
 3. run_aggregate_query(sql) only for aggregate/statistical summaries. The server
    rejects unsafe SQL and row dumps.
-4. plot(spec) only after an aggregate result exists.
+4. plot(spec) or render_chart(...) after an aggregate result exists.
+5. When the user asks for a chart, distribution, figure, or visualization, you MUST
+   run_aggregate_query first, then call plot or render_chart in the same turn when possible.
 
 SQL rules:
 - Use SELECT/WITH only.
@@ -84,6 +93,9 @@ SQL rules:
 - Do not use SELECT *.
 - Do not ask for individual animal/person/source-file records.
 - Do not fabricate values that did not appear in tool results.
+- End with 1-2 short follow-up question suggestions when helpful (e.g. "Would you like
+  a bar chart by contributor?").
+- If you are unsure, say what is missing instead of guessing.
 
 Data dictionary:
 """
@@ -138,7 +150,10 @@ TOOLS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "chart_type": {"type": "string", "enum": ["bar", "line", "scatter"]},
+                    "chart_type": {
+                        "type": "string",
+                        "enum": ["bar", "line", "scatter", "histogram", "box", "pie"],
+                    },
                     "x": {"type": "string"},
                     "y": {"type": "string"},
                     "title": {"type": "string"},
@@ -146,6 +161,38 @@ TOOLS: list[dict] = [
                 "required": ["chart_type", "x", "y"],
                 "additionalProperties": False,
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_chart",
+            "description": (
+                "Auto-build a chart from the latest aggregate query using column names. "
+                "Use when the user wants a figure but has not specified x/y."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_type": {
+                        "type": "string",
+                        "enum": ["bar", "line", "scatter", "histogram", "box", "pie"],
+                    },
+                    "title": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_last_result",
+            "description": (
+                "Return a compact JSON summary of the latest aggregate query "
+                "(row count, column names, numeric ranges) for self-checking."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
 ]
@@ -168,6 +215,120 @@ def _dictionary_table(name: str) -> dict | None:
 
 def _full_table_name(data: GemsData, name: str) -> str:
     return f"`{data.cfg['catalog']}`.`{data.cfg['schema']}`.`{name}`"
+
+
+def _is_numeric(value: Any) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _auto_chart_spec(result: dict, chart_type: str = "bar", title: str = "") -> dict | None:
+    rows = result.get("rows") or []
+    if not rows:
+        return None
+    columns = list(rows[0].keys())
+    if not columns:
+        return None
+    numeric = [c for c in columns if _is_numeric(rows[0].get(c))]
+    categorical = [c for c in columns if c not in numeric]
+    if chart_type == "histogram" and numeric:
+        col = numeric[0]
+        return {
+            "chart_type": "histogram",
+            "x": col,
+            "y": col,
+            "title": title,
+            "source": "last_aggregate_result",
+        }
+    if len(columns) < 2 or not numeric:
+        return None
+    y = numeric[-1]
+    x = categorical[0] if categorical else columns[0]
+    if x == y and len(columns) > 2:
+        x = next((c for c in columns if c != y), x)
+    return {
+        "chart_type": chart_type,
+        "x": x,
+        "y": y,
+        "title": title,
+        "source": "last_aggregate_result",
+    }
+
+
+def _summarize_result(result: dict) -> dict:
+    rows = result.get("rows") or []
+    if not rows:
+        return {"row_count": 0, "columns": [], "sample": []}
+    columns = list(rows[0].keys())
+    summary: dict[str, Any] = {"row_count": len(rows), "columns": columns, "sample": rows[:5]}
+    for col in columns:
+        vals = [r.get(col) for r in rows if r.get(col) is not None]
+        if vals and all(_is_numeric(v) for v in vals[:20]):
+            nums = [float(v) for v in vals]
+            summary[f"{col}_min"] = min(nums)
+            summary[f"{col}_max"] = max(nums)
+    return summary
+
+
+def _verify_answer(
+    user_message: str,
+    draft_answer: str,
+    tool_calls_log: list["ToolCall"],
+    model_name: str,
+) -> str:
+    """Second-pass check: answer must be supported by tool evidence only."""
+    evidence = []
+    has_aggregate = False
+    for tc in tool_calls_log:
+        if tc.name == "run_aggregate_query":
+            has_aggregate = True
+        if tc.name in {"run_aggregate_query", "summarize_last_result"}:
+            evidence.append({"tool": tc.name, "result": tc.result})
+    if not has_aggregate or not evidence:
+        return draft_answer
+
+    client = get_llm_client()
+    prompt = (
+        "You are a strict fact-checker. Given the user question, tool evidence, and a draft answer, "
+        "return ONLY valid JSON: {\"ok\": true/false, \"revised_answer\": \"...\"}. "
+        "Set ok=false if the draft cites numbers, tables, or trends not supported by evidence. "
+        "If ok=false, revised_answer must fix or qualify the answer and say what is unknown.\n\n"
+        f"User question: {user_message}\n\n"
+        f"Tool evidence: {json.dumps(evidence, default=str)[:25_000]}\n\n"
+        f"Draft answer: {draft_answer}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "Respond with JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=1200,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        if "```" in raw:
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) >= 2 else raw
+            if raw.lstrip().lower().startswith("json"):
+                raw = raw.split("\n", 1)[-1]
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            raw = raw[start : end + 1]
+        parsed = json.loads(raw)
+        if parsed.get("ok"):
+            return draft_answer
+        revised = (parsed.get("revised_answer") or "").strip()
+        if revised:
+            return revised + "\n\n*(Answer adjusted after data verification.)*"
+    except Exception:
+        return draft_answer
+    return draft_answer
 
 
 def _describe_table(data: GemsData, name: str) -> dict:
@@ -254,6 +415,21 @@ def _execute_tool(data: GemsData, name: str, args: dict, state: dict) -> Any:
             }
             state["last_plot"] = spec
             return {"plot_spec": spec}
+        if name == "render_chart":
+            last = state.get("last_result") or {}
+            if last.get("error"):
+                return last
+            chart_type = args.get("chart_type") or "bar"
+            spec = _auto_chart_spec(last, chart_type=chart_type, title=args.get("title", ""))
+            if not spec:
+                return {"error": True, "message": "No aggregate result to chart. Run run_aggregate_query first."}
+            state["last_plot"] = spec
+            return {"plot_spec": spec}
+        if name == "summarize_last_result":
+            last = state.get("last_result") or {}
+            if last.get("error"):
+                return last
+            return _summarize_result(last)
         return {"error": True, "message": f"Unknown tool: {name}"}
     except Exception as e:
         return {"error": True, "message": str(e)}
@@ -312,8 +488,14 @@ def run_agent(
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
+            answer = (msg.content or "").strip()
+            if _VISUAL_INTENT.search(user_message) and not state.get("last_plot"):
+                auto = _auto_chart_spec(state.get("last_result") or {}, chart_type="bar")
+                if auto:
+                    state["last_plot"] = auto
+            answer = _verify_answer(user_message, answer, tool_calls_log, model_name)
             return {
-                "answer": (msg.content or "").strip(),
+                "answer": answer,
                 "tool_calls": tool_calls_log,
                 "plot_spec": state.get("last_plot"),
             }
@@ -351,8 +533,13 @@ def run_agent(
                 }
             )
 
+    answer = "I reached the maximum number of tool calls. Please try a more specific aggregate question."
+    if _VISUAL_INTENT.search(user_message) and not state.get("last_plot"):
+        auto = _auto_chart_spec(state.get("last_result") or {}, chart_type="bar")
+        if auto:
+            state["last_plot"] = auto
     return {
-        "answer": "I reached the maximum number of tool calls. Please try a more specific aggregate question.",
+        "answer": answer,
         "tool_calls": tool_calls_log,
         "plot_spec": state.get("last_plot"),
     }

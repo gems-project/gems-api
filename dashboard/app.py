@@ -38,6 +38,11 @@ from gems_logo_data import (  # noqa: E402
     GEMS_LOGO_PNG_B64,
     GLOBAL_METHANE_HUB_PNG_B64,
 )
+from gems_geography import (  # noqa: E402
+    fallback_coordinates as _geo_fallback_coordinates,
+    geocode_query as _geo_geocode_query,
+    humanize_affiliation,
+)
 from gems_ui import apply_theme, render_html, sidebar_user  # noqa: E402
 from llm_client import check_llm_endpoint  # noqa: E402
 
@@ -88,23 +93,6 @@ _HOME_CATALOG = os.environ.get("GEMS_CATALOG", "gems_catalog")
 _HOME_SCHEMA = os.environ.get("GEMS_SCHEMA", "gold_v1")
 _RESOURCES_DIR = _DASHBOARD_ROOT / "resources"
 _SITE_GEOCACHE_PATH = _RESOURCES_DIR / "site_geocache.json"
-_LOCATION_FALLBACKS = {
-    "cornell": {"lat": 42.4534, "lon": -76.4735},
-    "ithaca": {"lat": 42.4430, "lon": -76.5019},
-    "california": {"lat": 36.7783, "lon": -119.4179},
-    "davis": {"lat": 38.5449, "lon": -121.7405},
-    "guelph": {"lat": 43.5448, "lon": -80.2482},
-    "zurich": {"lat": 47.3769, "lon": 8.5417},
-    "eth": {"lat": 47.3769, "lon": 8.5417},
-    "new england": {"lat": -30.5126, "lon": 151.6650},
-    "armidale": {"lat": -30.5142, "lon": 151.6690},
-    "canada": {"lat": 45.4215, "lon": -75.6972},
-    "ottawa": {"lat": 45.4215, "lon": -75.6972},
-    "australia": {"lat": -25.2744, "lon": 133.7751},
-    "switzerland": {"lat": 46.8182, "lon": 8.2275},
-    "united states": {"lat": 39.8283, "lon": -98.5795},
-    "usa": {"lat": 39.8283, "lon": -98.5795},
-}
 _CONSORTIUM_MEMBERS = [
     ("Cornell University", "cornell_university.png"),
     ("University of California", "university_of_california.png"),
@@ -241,45 +229,66 @@ def _date_range_live():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _site_rows_live() -> list[dict]:
-    for table in ("bronzeexperimentaldesign", "goldexperimentaldesign"):
-        study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
-        location_col = _resolve_col(
-            table,
-            "ExperimentalLocation",
-            "experimentalLocation",
-            "Experimental location",
-            "experimental_location",
-        )
-        if not study_col or not location_col:
-            continue
-        try:
-            loc = _col(location_col)
-            with _home_connect() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT {loc}, COUNT(DISTINCT {_col(study_col)}) AS study_count "
-                    f"FROM {_fq(table)} "
-                    f"WHERE {loc} IS NOT NULL "
-                    f"AND TRIM(CAST({loc} AS STRING)) <> '' "
-                    f"GROUP BY {loc}"
-                )
-                rows = cur.fetchall()
-            sites = [
-                {"location": str(row[0]).strip(), "study_count": int(row[1] or 0)}
-                for row in rows
-                if row and str(row[0] or "").strip()
-            ]
-            if sites:
-                return sites
-        except Exception:
-            continue
-    return []
+    """Study counts by contributor affiliation (unique studyId per affiliation)."""
+    table = "goldcontributor"
+    study_col = _resolve_col(table, "studyId", "studyID", "study_id", "StudyId")
+    affiliation_col = _resolve_col(table, "Affiliation", "affiliation")
+    if not study_col or not affiliation_col:
+        return []
+    try:
+        aff = _col(affiliation_col)
+        with _home_connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {aff}, COUNT(DISTINCT {_col(study_col)}) AS study_count "
+                f"FROM {_fq(table)} "
+                f"WHERE {aff} IS NOT NULL "
+                f"AND TRIM(CAST({aff} AS STRING)) <> '' "
+                f"GROUP BY {aff}"
+            )
+            rows = cur.fetchall()
+        sites = []
+        for row in rows:
+            if not row or not str(row[0] or "").strip():
+                continue
+            raw = str(row[0]).strip()
+            sites.append(
+                {
+                    "location": raw,
+                    "label": humanize_affiliation(raw),
+                    "study_count": int(row[1] or 0),
+                }
+            )
+        return sites
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _partner_institutions_live() -> list[str]:
+    """Unique affiliation strings (not study-distinguished)."""
+    table = "goldcontributor"
+    affiliation_col = _resolve_col(table, "Affiliation", "affiliation")
+    if not affiliation_col:
+        return []
+    try:
+        aff = _col(affiliation_col)
+        with _home_connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT {aff} FROM {_fq(table)} "
+                f"WHERE {aff} IS NOT NULL AND TRIM(CAST({aff} AS STRING)) <> '' "
+                f"ORDER BY {aff}"
+            )
+            rows = cur.fetchall()
+        return [humanize_affiliation(str(row[0]).strip()) for row in rows if row and str(row[0] or "").strip()]
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _institution_count_live():
-    sites = _site_rows_live()
-    if sites:
-        return len({site["location"] for site in sites if site.get("location")})
+    partners = _partner_institutions_live()
+    if partners:
+        return len(partners)
     return None
 
 
@@ -328,10 +337,7 @@ def _date_range_label(value: list[str] | None) -> str:
 
 
 def _normalize_site_for_geocode(location: str) -> str:
-    text = (location or "").strip()
-    if text.lower() == "cornell":
-        return "Cornell University, Ithaca, New York, United States"
-    return text
+    return _geo_geocode_query(location)
 
 
 def _read_site_geocache() -> dict:
@@ -355,25 +361,36 @@ def _write_site_geocache(cache: dict) -> None:
 
 
 def _fallback_coordinates(location: str) -> dict | None:
-    normalized = " ".join((location or "").lower().replace(",", " ").split())
-    for key, coords in _LOCATION_FALLBACKS.items():
-        if key in normalized:
-            return coords
-    return None
+    return _geo_fallback_coordinates(location)
 
 
 def _geocode_one(location: str) -> dict | None:
     try:
         from geopy.geocoders import Nominatim
 
+        from gems_geography import preferred_country
+
         geolocator = Nominatim(user_agent="gems-dashboard")
-        result = geolocator.geocode(_normalize_site_for_geocode(location), timeout=5)
-        if result:
+        want_country = preferred_country(location)
+
+        def _try(query: str) -> dict | None:
+            result = geolocator.geocode(query, timeout=8, addressdetails=True)
+            if not result:
+                return None
+            got_country = (result.raw.get("address") or {}).get("country")
+            if want_country and got_country and got_country != want_country:
+                return None
             return {
                 "lat": float(result.latitude),
                 "lon": float(result.longitude),
-                "country": (result.raw.get("address") or {}).get("country"),
+                "country": got_country,
             }
+
+        coords = _try(_normalize_site_for_geocode(location))
+        if coords:
+            return coords
+        if want_country:
+            return _try(f"{humanize_affiliation(location)}, {want_country}")
     except Exception:
         return None
     return None
@@ -393,15 +410,19 @@ def _geocode_sites(sites: list[dict]) -> list[dict]:
                 cache[location] = cached
                 changed = True
         if cached is None:
-            cached = _fallback_coordinates(location)
-            if cached:
-                cached = {"lat": cached["lat"], "lon": cached["lon"], "country": None}
+            fb = _fallback_coordinates(location)
+            if fb:
+                cached = {
+                    "lat": float(fb["lat"]),
+                    "lon": float(fb["lon"]),
+                    "country": fb.get("country"),
+                }
                 cache[location] = cached
                 changed = True
         if cached:
             located.append(
                 {
-                    "location": location,
+                    "location": site.get("label") or humanize_affiliation(location),
                     "study_count": site.get("study_count", 0),
                     "lat": float(cached["lat"]),
                     "lon": float(cached["lon"]),
@@ -421,13 +442,29 @@ def _render_stat_cards() -> None:
     date_range = _date_stat_value()
 
     sc1, sc2, sc3, sc4 = st.columns(4)
-    cards = [
-        (sc1, institutions, "Partner institutions"),
+    sc1.markdown(
+        f'<div class="gems-stat"><div class="v">{institutions}</div>'
+        f'<div class="l">Partner institutions</div></div>',
+        unsafe_allow_html=True,
+    )
+    partners = st.session_state.get("home_partner_institutions")
+    if partners is None:
+        partners = _partner_institutions_live()
+        if partners:
+            st.session_state["home_partner_institutions"] = partners
+    if partners:
+        with sc1.popover("View partner institutions"):
+            st.markdown("**Unique affiliations** from `goldcontributor`:")
+            for name in partners:
+                st.markdown(f"- {name}")
+    else:
+        sc1.caption("Partner list loads from Databricks when available.")
+
+    for col, value, label in (
         (sc2, studies, "Studies"),
         (sc3, animals, "Animals"),
         (sc4, date_range, "Date range"),
-    ]
-    for col, value, label in cards:
+    ):
         col.markdown(
             f'<div class="gems-stat"><div class="v">{value}</div>'
             f'<div class="l">{label}</div></div>',
@@ -473,11 +510,7 @@ def _render_site_map() -> None:
         st.session_state["home_site_rows"] = sites
         showing_cached = False
     else:
-        cached_rows = [
-            {"location": location, "study_count": 0}
-            for location in sorted(_SITE_GEOCACHE)
-        ]
-        sites = st.session_state.get("home_site_rows", cached_rows or _DEFAULT_SITE_ROWS)
+        sites = st.session_state.get("home_site_rows") or _DEFAULT_SITE_ROWS
         showing_cached = True
 
     located = _geocode_sites(sites) if sites else []
@@ -502,9 +535,15 @@ def _render_site_map() -> None:
         ).add_to(cluster)
     st_folium(fmap, height=390, use_container_width=True)
     if showing_cached:
-        st.caption("Showing cached site list while live Databricks locations are unavailable.")
+        st.caption(
+            "Live affiliation data is unavailable; showing the last known site list or defaults. "
+            "Run `python tools_build_site_geocache.py` after deploy to refresh map coordinates."
+        )
     else:
-        st.caption("Locations are pulled live from Databricks; coordinates come from the persisted site geocache.")
+        st.caption(
+            "Study counts use distinct studyId per affiliation in `goldcontributor`; "
+            "coordinates come from the site geocache (camelCase affiliations are expanded before geocoding)."
+        )
 
 
 _SITE_GEOCACHE = _read_site_geocache()

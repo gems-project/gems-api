@@ -8,12 +8,19 @@ columns are stripped from every schema and result returned to the model.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+_VISUAL_INTENT = re.compile(
+    r"\b(plot|chart|graph|figure|distribution|histogram|box\s*plot|boxplot|"
+    r"scatter|bar\s*chart|line\s*chart|visuali[sz]e|trend|frequency)\b",
+    re.IGNORECASE,
+)
 from dotenv import load_dotenv
 
 _DASHBOARD_ROOT = Path(__file__).resolve().parent
@@ -41,6 +48,8 @@ st.sidebar.caption("- What tables are available and what do they contain?")
 st.sidebar.caption("- How many rows are in bodyweight?")
 st.sidebar.caption("- Average body weight per contributor, sorted descending.")
 st.sidebar.caption("- Which animals have the most respiration-chamber measurements?")
+st.sidebar.caption("- Show a bar chart of average body weight by study.")
+st.sidebar.caption("- Plot the distribution of methane emissions by species.")
 
 if st.sidebar.button("Clear conversation"):
     st.session_state.pop("chat_history", None)
@@ -96,39 +105,67 @@ def _render_tool_calls(tool_calls: list) -> None:
                 st.json(result if isinstance(result, dict) else {"value": str(result)})
 
 
-def _render_plot(plot_spec: dict | None, tool_calls: list) -> None:
-    if not plot_spec:
-        return
-    last_result = None
+def _last_aggregate(tool_calls: list) -> dict | None:
     for tc in reversed(tool_calls):
         name = tc["name"] if isinstance(tc, dict) else tc.name
         result = tc["result"] if isinstance(tc, dict) else tc.result
         if name == "run_aggregate_query" and isinstance(result, dict) and result.get("rows"):
-            last_result = result
-            break
-    if not last_result:
+            return result
+    return None
+
+
+def _infer_plot_spec(plot_spec: dict | None, last_result: dict, user_text: str = "") -> dict | None:
+    if plot_spec:
+        return plot_spec
+    if not last_result or not last_result.get("rows"):
+        return None
+    if user_text and not _VISUAL_INTENT.search(user_text):
+        return None
+    from gems_chat import _auto_chart_spec
+
+    chart_type = "histogram" if re.search(r"\b(histogram|distribution|frequency)\b", user_text, re.I) else "bar"
+    return _auto_chart_spec(last_result, chart_type=chart_type)
+
+
+def _render_plot(plot_spec: dict | None, tool_calls: list, user_text: str = "") -> None:
+    last_result = _last_aggregate(tool_calls)
+    spec = _infer_plot_spec(plot_spec, last_result or {}, user_text)
+    if not spec or not last_result:
         return
     df = pd.DataFrame(last_result["rows"])
-    x = plot_spec.get("x")
-    y = plot_spec.get("y")
-    if x not in df.columns or y not in df.columns:
+    x = spec.get("x")
+    y = spec.get("y")
+    chart_type = spec.get("chart_type", "bar")
+    title = spec.get("title") or None
+    if chart_type == "histogram":
+        col = x if x in df.columns else y
+        if col not in df.columns:
+            return
+        fig = px.histogram(df, x=col, title=title)
+    elif x not in df.columns or y not in df.columns:
         return
-    chart_type = plot_spec.get("chart_type", "bar")
-    title = plot_spec.get("title") or None
-    if chart_type == "line":
+    elif chart_type == "line":
         fig = px.line(df, x=x, y=y, title=title)
     elif chart_type == "scatter":
         fig = px.scatter(df, x=x, y=y, title=title)
+    elif chart_type == "box":
+        fig = px.box(df, x=x, y=y, title=title)
+    elif chart_type == "pie":
+        fig = px.pie(df, names=x, values=y, title=title)
     else:
         fig = px.bar(df, x=x, y=y, title=title)
     st.plotly_chart(fig, use_container_width=True)
 
 
-for turn in st.session_state.chat_history:
+history = st.session_state.chat_history
+for idx, turn in enumerate(history):
     with st.chat_message(turn["role"]):
         st.markdown(turn["content"])
         if turn["role"] == "assistant":
-            _render_plot(turn.get("plot_spec"), turn.get("tool_calls", []))
+            prior_user = ""
+            if idx > 0 and history[idx - 1]["role"] == "user":
+                prior_user = history[idx - 1].get("content", "")
+            _render_plot(turn.get("plot_spec"), turn.get("tool_calls", []), prior_user)
             _render_tool_calls(turn.get("tool_calls", []))
 
 
@@ -158,7 +195,7 @@ if user_msg:
             {"name": tc.name, "arguments": tc.arguments, "result": tc.result}
             for tc in tool_calls
         ]
-        _render_plot(plot_spec, tc_serialized)
+        _render_plot(plot_spec, tc_serialized, user_msg)
         _render_tool_calls(tc_serialized)
 
     st.session_state.chat_history.append({"role": "user", "content": user_msg})

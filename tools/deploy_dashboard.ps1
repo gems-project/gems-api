@@ -84,6 +84,7 @@ try {
     "gems_stats.py",
     "gems_ai.py",
     "gems_chat.py",
+    "gems_geography.py",
     "gems_logo_data.py",
     "gems_api_keys.py",
     "permissions.py",

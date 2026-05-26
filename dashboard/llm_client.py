@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from openai import OpenAI
 
-DEFAULT_DATABRICKS_LLM_ENDPOINT = "databricks-claude-haiku-4-5"
+DEFAULT_DATABRICKS_LLM_ENDPOINT = "databricks-claude-opus-4-7"
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o"
 
 

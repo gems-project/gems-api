@@ -1,3 +1,5 @@
+"""Build site_geocache.json from goldcontributor.Affiliation (not experimental location)."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +12,10 @@ from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env", override=True)
+
+from gems_geography import geocode_query, humanize_affiliation  # noqa: E402
 
 
 def _connect():
@@ -24,23 +29,16 @@ def _connect():
     )
 
 
-def _normalize_site_for_geocode(location: str) -> str:
-    text = (location or "").strip()
-    if text.lower() == "cornell":
-        return "Cornell University, Ithaca, New York, United States"
-    return text
-
-
-def _fetch_sites() -> list[str]:
+def _fetch_affiliations() -> list[str]:
     catalog = os.environ.get("GEMS_CATALOG", "gems_catalog")
     schema = os.environ.get("GEMS_SCHEMA", "gold_v1")
-    sql = """
-    SELECT DISTINCT `ExperimentalLocation`
-    FROM `{catalog}`.`{schema}`.`bronzeexperimentaldesign`
-    WHERE `ExperimentalLocation` IS NOT NULL
-    AND TRIM(CAST(`ExperimentalLocation` AS STRING)) <> ''
-    ORDER BY `ExperimentalLocation`
-    """.format(catalog=catalog, schema=schema)
+    sql = f"""
+    SELECT DISTINCT `Affiliation`
+    FROM `{catalog}`.`{schema}`.`goldcontributor`
+    WHERE `Affiliation` IS NOT NULL
+    AND TRIM(CAST(`Affiliation` AS STRING)) <> ''
+    ORDER BY `Affiliation`
+    """
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(sql)
         return [str(row[0]).strip() for row in cur.fetchall() if str(row[0] or "").strip()]
@@ -50,21 +48,22 @@ def main() -> int:
     out = ROOT / "resources" / "site_geocache.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     existing = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
-    sites = _fetch_sites()
-    print(f"Distinct ExperimentalLocation count: {len(sites)}")
-    print(f"Sample: {sites[:10]}")
+    affiliations = _fetch_affiliations()
+    print(f"Distinct Affiliation count: {len(affiliations)}")
+    print(f"Sample: {[humanize_affiliation(a) for a in affiliations[:10]]}")
 
     geolocator = Nominatim(user_agent="gems-dashboard")
     cache = dict(existing)
     failed: list[str] = []
 
-    for idx, site in enumerate(sites, start=1):
-        if site in cache:
+    for idx, raw in enumerate(affiliations, start=1):
+        if raw in cache:
             continue
+        query = geocode_query(raw)
         result = None
         for attempt in range(2):
             try:
-                result = geolocator.geocode(_normalize_site_for_geocode(site), timeout=8, addressdetails=True)
+                result = geolocator.geocode(query, timeout=8, addressdetails=True)
                 if result:
                     break
             except Exception:
@@ -72,20 +71,21 @@ def main() -> int:
             if attempt == 0:
                 time.sleep(1.1)
         if result:
-            cache[site] = {
+            cache[raw] = {
                 "lat": float(result.latitude),
                 "lon": float(result.longitude),
                 "country": (result.raw.get("address") or {}).get("country"),
+                "label": humanize_affiliation(raw),
             }
-            print(f"[{idx}/{len(sites)}] geocoded: {site}")
+            print(f"[{idx}/{len(affiliations)}] geocoded: {humanize_affiliation(raw)}")
         else:
-            failed.append(site)
-            print(f"[{idx}/{len(sites)}] failed: {site}")
+            failed.append(raw)
+            print(f"[{idx}/{len(affiliations)}] failed: {humanize_affiliation(raw)}")
         time.sleep(1.1)
 
     out.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
     print(f"Wrote {out}")
-    print(f"Failed to geocode ({len(failed)}): {failed}")
+    print(f"Failed to geocode ({len(failed)}): {[humanize_affiliation(f) for f in failed]}")
     return 0
 
 
