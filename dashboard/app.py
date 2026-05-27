@@ -46,7 +46,6 @@ from gems_geography import (  # noqa: E402
     institution_key,
 )
 from gems_ui import apply_theme, render_html, sidebar_user  # noqa: E402
-from llm_client import check_llm_endpoint  # noqa: E402
 
 st.set_page_config(
     page_title="GEMS Dashboard",
@@ -56,7 +55,6 @@ st.set_page_config(
 )
 
 apply_theme()
-check_llm_endpoint()
 
 
 def _md_html(body: str) -> str:

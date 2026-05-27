@@ -37,8 +37,10 @@ https://gems.bovi-analytics.org/.auth/login/auth0/callback,https://gems-dashboar
 **Allowed Logout URLs**
 
 ```text
-https://gems.bovi-analytics.org,https://gems.bovi-analytics.org/.auth/logout,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net/.auth/logout
+https://gems.bovi-analytics.org,https://gems.bovi-analytics.org/.auth/logout,https://gems.bovi-analytics.org/.auth/logout/complete,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net/.auth/logout,https://gems-dashboard-aed0h2fufpd8byf6.eastus-01.azurewebsites.net/.auth/logout/complete
 ```
+
+**Important:** Azure Easy Auth sends `post_logout_redirect_uri` to `/.auth/logout/complete`. If that exact URL is missing from **Allowed Logout URLs**, Auth0 shows “Oops!, something went wrong” on sign-out.
 
 **Allowed Web Origins**
 

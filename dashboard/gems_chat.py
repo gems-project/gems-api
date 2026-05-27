@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from gems_data import GemsData, display_name
 from llm_client import chat_completion, get_llm_client, get_llm_model
@@ -273,63 +273,6 @@ def _summarize_result(result: dict) -> dict:
     return summary
 
 
-def _verify_answer(
-    user_message: str,
-    draft_answer: str,
-    tool_calls_log: list["ToolCall"],
-    model_name: str,
-) -> str:
-    """Second-pass check: answer must be supported by tool evidence only."""
-    evidence = []
-    has_aggregate = False
-    for tc in tool_calls_log:
-        if tc.name == "run_aggregate_query":
-            has_aggregate = True
-        if tc.name in {"run_aggregate_query", "summarize_last_result"}:
-            evidence.append({"tool": tc.name, "result": tc.result})
-    if not has_aggregate or not evidence:
-        return draft_answer
-
-    prompt = (
-        "You are a strict fact-checker. Given the user question, tool evidence, and a draft answer, "
-        "return ONLY valid JSON: {\"ok\": true/false, \"revised_answer\": \"...\"}. "
-        "Set ok=false if the draft cites numbers, tables, or trends not supported by evidence. "
-        "If ok=false, revised_answer must fix or qualify the answer and say what is unknown.\n\n"
-        f"User question: {user_message}\n\n"
-        f"Tool evidence: {json.dumps(evidence, default=str)[:25_000]}\n\n"
-        f"Draft answer: {draft_answer}"
-    )
-    try:
-        resp = chat_completion(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "Respond with JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=1200,
-        )
-        raw = (resp.choices[0].message.content or "").strip()
-        if "```" in raw:
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) >= 2 else raw
-            if raw.lstrip().lower().startswith("json"):
-                raw = raw.split("\n", 1)[-1]
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            raw = raw[start : end + 1]
-        parsed = json.loads(raw)
-        if parsed.get("ok"):
-            return draft_answer
-        revised = (parsed.get("revised_answer") or "").strip()
-        if revised:
-            return revised + "\n\n*(Answer adjusted after data verification.)*"
-    except Exception:
-        return draft_answer
-    return draft_answer
-
-
 def _describe_table(data: GemsData, name: str) -> dict:
     schema = data.get_schema(name)
     info = _dictionary_table(name) or {}
@@ -452,9 +395,22 @@ def run_agent(
     data: GemsData,
     model: str | None = None,
     max_iters: int = 15,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict:
-    client = get_llm_client()
+    get_llm_client()
     model_name = model or get_llm_model()
+
+    def _status(label: str) -> None:
+        if on_status:
+            on_status(label)
+
+    _TOOL_STATUS = {
+        "list_tables": "Listing tables…",
+        "describe_table": "Loading table schema…",
+        "run_aggregate_query": "Running SQL on Databricks…",
+        "plot": "Building chart…",
+        "render_chart": "Building chart…",
+    }
 
     messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT + _dictionary_prompt()}
@@ -467,6 +423,7 @@ def run_agent(
     state: dict = {}
 
     for _ in range(max_iters):
+        _status("Calling assistant…")
         try:
             resp = chat_completion(
                 model=model_name,
@@ -487,12 +444,12 @@ def run_agent(
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
+            _status("Writing answer…")
             answer = (msg.content or "").strip()
             if _VISUAL_INTENT.search(user_message) and not state.get("last_plot"):
                 auto = _auto_chart_spec(state.get("last_result") or {}, chart_type="bar")
                 if auto:
                     state["last_plot"] = auto
-            answer = _verify_answer(user_message, answer, tool_calls_log, model_name)
             return {
                 "answer": answer,
                 "tool_calls": tool_calls_log,
@@ -522,8 +479,11 @@ def run_agent(
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _execute_tool(data, tc.function.name, args, state)
-            tool_calls_log.append(ToolCall(name=tc.function.name, arguments=args, result=result))
+            tool_name = tc.function.name
+            if tool_name in _TOOL_STATUS:
+                _status(_TOOL_STATUS[tool_name])
+            result = _execute_tool(data, tool_name, args, state)
+            tool_calls_log.append(ToolCall(name=tool_name, arguments=args, result=result))
             messages.append(
                 {
                     "role": "tool",

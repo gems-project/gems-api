@@ -109,3 +109,5 @@ What the script does:
 - **Unauthorized on data pages:** check `ALLOWED_USERS`.
 - **Dashboard user cannot access API page:** check `ALLOWED_API_USERS` on `gems-api` and confirm `DASHBOARD_API_AUTHZ_SECRET` matches in both apps.
 - **Git object cleanup prompts on Windows/OneDrive:** usually non-fatal; verify commit with `git log -1` and `git status`.
+- **Home page feels slow:** first load runs several cached Databricks stat queries (1 h TTL). The LLM is **not** pinged on Home anymore; Chat/Explore AI run the endpoint only when you use them. Do not set `GEMS_CHECK_LLM_ON_STARTUP=1` in production unless debugging.
+- **Chat feels slow:** Chat uses `DATABRICKS_LLM_ENDPOINT` (Opus) with multiple tool rounds per question; larger models are slower, not faster.

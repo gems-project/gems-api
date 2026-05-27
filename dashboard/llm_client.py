@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 DEFAULT_DATABRICKS_LLM_ENDPOINT = "databricks-claude-opus-4-7"
+DEFAULT_DATABRICKS_CHAT_LLM_ENDPOINT = "databricks-claude-haiku-4-5"
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o"
 
 
@@ -52,6 +53,18 @@ def get_llm_model() -> str:
     return os.environ.get("OPENAI_CHAT_MODEL", DEFAULT_OPENAI_CHAT_MODEL).strip() or DEFAULT_OPENAI_CHAT_MODEL
 
 
+def get_chat_llm_model() -> str:
+    """Chat model — defaults to ``DATABRICKS_LLM_ENDPOINT`` (e.g. Opus 4.7).
+
+    Set ``DATABRICKS_CHAT_LLM_ENDPOINT`` only if you want a *different* model for
+    Chat (e.g. Haiku for speed). More capable models are usually slower, not faster.
+    """
+    chat = os.environ.get("DATABRICKS_CHAT_LLM_ENDPOINT", "").strip()
+    if chat:
+        return chat
+    return get_llm_model()
+
+
 def chat_completion(**kwargs: Any):
     """Databricks Claude serving endpoints reject the temperature parameter."""
     if _is_databricks_endpoint():
@@ -60,6 +73,11 @@ def chat_completion(**kwargs: Any):
 
 
 def check_llm_endpoint() -> None:
+    """Optional health ping. Not run on Home page load (see app.py).
+
+    Set ``GEMS_CHECK_LLM_ON_STARTUP=1`` to restore a ping when ``app`` imports
+    this module (local debugging only).
+    """
     try:
         chat_completion(
             model=get_llm_model(),
@@ -69,3 +87,13 @@ def check_llm_endpoint() -> None:
         print(f"[LLM] {get_llm_model()} reachable.")
     except Exception as e:
         print(f"[LLM] WARNING: endpoint check failed: {e}")
+
+
+def maybe_check_llm_on_startup() -> None:
+    """Run ``check_llm_endpoint`` only when explicitly enabled via env."""
+    if os.environ.get("GEMS_CHECK_LLM_ON_STARTUP", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        check_llm_endpoint()

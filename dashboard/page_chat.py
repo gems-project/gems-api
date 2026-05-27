@@ -175,20 +175,26 @@ if user_msg:
         st.markdown(user_msg)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            llm_history = [
-                {"role": t["role"], "content": t["content"]}
-                for t in st.session_state.chat_history
-            ]
-            try:
-                result = run_agent(user_msg, llm_history, data)
-                answer = result["answer"]
-                tool_calls = result["tool_calls"]
-                plot_spec = result.get("plot_spec")
-            except Exception as e:
-                answer = f"Error: {e}"
-                tool_calls = []
-                plot_spec = None
+        status = st.status("Calling assistant…", expanded=True)
+        llm_history = [
+            {"role": t["role"], "content": t["content"]}
+            for t in st.session_state.chat_history
+        ]
+        try:
+            result = run_agent(
+                user_msg,
+                llm_history,
+                data,
+                on_status=lambda label: status.update(label=label),
+            )
+            answer = result["answer"]
+            tool_calls = result["tool_calls"]
+            plot_spec = result.get("plot_spec")
+        except Exception as e:
+            answer = f"Error: {e}"
+            tool_calls = []
+            plot_spec = None
+        status.update(label="Done", state="complete")
 
         st.markdown(answer or "_(no answer)_")
         tc_serialized = [
