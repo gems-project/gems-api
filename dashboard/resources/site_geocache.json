@@ -75,5 +75,41 @@
     "label": "Universit\u00e0 Cattolica del Sacro Cuore",
     "lat": 45.0368414,
     "lon": 9.727151
+  },
+  "WageningenLivestockResearch": {
+    "country": "Netherlands",
+    "label": "Wageningen Livestock Research",
+    "lat": 51.983631,
+    "lon": 5.6589866
+  },
+  "Wageningen University and Research": {
+    "country": "Netherlands",
+    "label": "Wageningen University and Research",
+    "lat": 51.985445,
+    "lon": 5.663212
+  },
+  "Wageningen Livestock Research": {
+    "country": "Netherlands",
+    "label": "Wageningen Livestock Research",
+    "lat": 51.983631,
+    "lon": 5.6589866
+  },
+  "WageningenUniversity&Research": {
+    "country": "Netherlands",
+    "label": "Wageningen University and Research",
+    "lat": 51.985445,
+    "lon": 5.663212
+  },
+  "wageningenlivestockresearch": {
+    "country": "Netherlands",
+    "label": "Wageningen Livestock Research",
+    "lat": 51.983631,
+    "lon": 5.6589866
+  },
+  "wageningenuniversityandresearch": {
+    "country": "Netherlands",
+    "label": "Wageningen University and Research",
+    "lat": 51.985445,
+    "lon": 5.663212
   }
 }

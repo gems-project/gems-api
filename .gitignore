@@ -197,6 +197,12 @@ cython_debug/
 # Delta Sharing: local exports (often large; GitHub blocks files > 100 MB)
 Delta sharing/shared_table_exports/
 
+# Local GEMS API downloads (can exceed GitHub's 100 MB file limit)
+gems_data/
+
+# Local Azure zip deploy artifact
+gems-dashboard.zip
+
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data

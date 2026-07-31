@@ -46,6 +46,33 @@ _KNOWN_INSTITUTION_QUERIES: dict[str, str] = {
         "Research Institute for Farm Animal Biology (FBN), Dummerstorf, Germany"
     ),
     "ethzurich": "ETH Zurich, Zurich, Switzerland",
+    # Keep "&" — Nominatim fails on "Wageningen University and Research".
+    "wageningenuniversityandresearch": (
+        "Wageningen University & Research, Wageningen, Netherlands"
+    ),
+    # Zodiac / De Elst 1 on Wageningen Campus (WLR headquarters).
+    "wageningenlivestockresearch": "De Elst 1, 6708 WD Wageningen, Netherlands",
+}
+
+# Nominatim local country names that should match English preferred_country values.
+_COUNTRY_ALIASES: dict[str, set[str]] = {
+    "netherlands": {"netherlands", "nederland", "the netherlands"},
+    "italy": {"italy", "italia"},
+    "germany": {"germany", "deutschland"},
+    "spain": {"spain", "españa", "espana"},
+    "sweden": {"sweden", "sverige"},
+    "norway": {"norway", "norge"},
+    "denmark": {"denmark", "danmark"},
+    "belgium": {"belgium", "belgië", "belgie", "belgique"},
+    "switzerland": {"switzerland", "schweiz", "suisse", "svizzera"},
+    "france": {"france"},
+    "united states": {"united states", "united states of america", "usa"},
+    "united kingdom": {"united kingdom", "uk", "great britain"},
+    "canada": {"canada"},
+    "australia": {"australia"},
+    "new zealand": {"new zealand", "aotearoa"},
+    "ireland": {"ireland", "éire", "eire"},
+    "austria": {"austria", "österreich", "osterreich"},
 }
 
 # Word-boundary fallbacks (longer keys first).
@@ -54,6 +81,15 @@ _LOCATION_FALLBACKS: list[tuple[str, dict]] = [
     ("fbn", {"lat": 53.85, "lon": 12.23, "country": "Germany"}),
     ("cattolica del sacro cuore", {"lat": 45.05, "lon": 9.70, "country": "Italy"}),
     ("sacro cuore", {"lat": 45.05, "lon": 9.70, "country": "Italy"}),
+    (
+        "wageningen livestock research",
+        {"lat": 51.983631, "lon": 5.6589866, "country": "Netherlands"},
+    ),
+    (
+        "wageningen university",
+        {"lat": 51.985445, "lon": 5.663212, "country": "Netherlands"},
+    ),
+    ("wageningen", {"lat": 51.985445, "lon": 5.663212, "country": "Netherlands"}),
     ("lethbridge", {"lat": 49.6940, "lon": -112.8328, "country": "Canada"}),
     ("agri-food canada", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
     ("agriculture and agri-food", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
@@ -72,6 +108,7 @@ _LOCATION_FALLBACKS: list[tuple[str, dict]] = [
     ("canada", {"lat": 45.4215, "lon": -75.6972, "country": "Canada"}),
     ("italy", {"lat": 41.8719, "lon": 12.5674, "country": "Italy"}),
     ("germany", {"lat": 51.1657, "lon": 10.4515, "country": "Germany"}),
+    ("netherlands", {"lat": 52.1326, "lon": 5.2913, "country": "Netherlands"}),
     ("united states", {"lat": 39.8283, "lon": -98.5795, "country": "United States"}),
 ]
 
@@ -159,7 +196,23 @@ def preferred_country(affiliation: str) -> str | None:
         return "Italy"
     if "fbn" in lowered or "farmanimal biology" in lowered or "farm animal biology" in lowered:
         return "Germany"
+    if "wageningen" in lowered:
+        return "Netherlands"
     return None
+
+
+def countries_match(want: str | None, got: str | None) -> bool:
+    """True when Nominatim country matches preferred English country (incl. aliases)."""
+    if not want or not got:
+        return True
+    want_n = unicodedata.normalize("NFKD", want).encode("ascii", "ignore").decode("ascii")
+    got_n = unicodedata.normalize("NFKD", got).encode("ascii", "ignore").decode("ascii")
+    want_l = want_n.strip().lower()
+    got_l = got_n.strip().lower()
+    if want_l == got_l:
+        return True
+    aliases = _COUNTRY_ALIASES.get(want_l)
+    return bool(aliases and got_l in aliases)
 
 
 def geocode_query(affiliation: str) -> str:
@@ -179,6 +232,11 @@ def geocode_query(affiliation: str) -> str:
 def fallback_coordinates(affiliation: str) -> dict | None:
     """Keyword fallbacks with word boundaries."""
     key = institution_key(humanize_affiliation(affiliation))
+    # Hard pins for institutions whose Nominatim names are unreliable.
+    if key == "wageningenlivestockresearch":
+        return {"lat": 51.983631, "lon": 5.6589866, "country": "Netherlands"}
+    if key == "wageningenuniversityandresearch":
+        return {"lat": 51.985445, "lon": 5.663212, "country": "Netherlands"}
     if key in _KNOWN_INSTITUTION_QUERIES:
         query = _KNOWN_INSTITUTION_QUERIES[key].lower()
         for phrase, coords in _LOCATION_FALLBACKS:

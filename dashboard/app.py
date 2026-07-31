@@ -391,7 +391,7 @@ def _geocode_one(location: str) -> dict | None:
     try:
         from geopy.geocoders import Nominatim
 
-        from gems_geography import preferred_country
+        from gems_geography import countries_match, preferred_country
 
         geolocator = Nominatim(user_agent="gems-dashboard")
         want_country = preferred_country(location)
@@ -401,7 +401,7 @@ def _geocode_one(location: str) -> dict | None:
             if not result:
                 return None
             got_country = (result.raw.get("address") or {}).get("country")
-            if want_country and got_country and got_country != want_country:
+            if want_country and got_country and not countries_match(want_country, got_country):
                 return None
             return {
                 "lat": float(result.latitude),
