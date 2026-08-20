@@ -39,6 +39,10 @@ copy .env.example .env
 Edit `.env` with real values (minimum: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`,
 `DATABRICKS_TOKEN`, `DATABRICKS_LLM_ENDPOINT`, `ALLOWED_TABLES`).
 
+Optional: set `LOCAL_DEV_USER` to an email in `ALLOWED_USERS` to exercise data pages
+locally. If `LOCAL_DEV_USER` is unset, Home behaves as a public visitor and data
+pages show the Sign in gate.
+
 Then run:
 
 ```powershell
@@ -64,13 +68,29 @@ Open `http://localhost:8501`.
 
 ## Access Control Model (Current)
 
-- Easy Auth controls who can sign in.
+Two layers:
+
+1. **Azure Easy Auth + Auth0** — establishes browser identity (optional for Home).
+2. **`ALLOWED_USERS`** — after sign-in, gates Explore / Modeling / Chat. API Access also needs `GEMS-API.ALLOWED_API_USERS`.
+
+### Public Home (intended production setting)
+
+- **Home** is visible without signing in.
+- In Azure Portal → Web App `gems-dashboard` → **Authentication**:
+  - Keep Auth0 / Easy Auth **Enabled**.
+  - Set unauthenticated requests to **Allow anonymous** (not “Require authentication”).
+  - Keep Auth0 as the identity provider for Sign in (`/.auth/login/auth0`).
+- Deploy the dashboard code that shows Sign in on Home and blocks data pages until Auth0 + allowlist.
+
+Until that Easy Auth setting is changed, Azure still forces Auth0 before any page (including Home).
+
+### After sign-in
+
+- Anyone may complete Auth0 signup/login and email verification.
 - `gems-dashboard.ALLOWED_USERS` controls Explore / Modeling / Chat access.
 - `GEMS-API.ALLOWED_API_USERS` controls API Access page visibility, API-key generation, and whether the API service accepts the user.
-
-- Home page remains visible to signed-in users.
-- A user must be in both `gems-dashboard.ALLOWED_USERS` and `GEMS-API.ALLOWED_API_USERS` for full dashboard + API functionality.
-- Explore/Modeling/Chat call `require_authorized_user()`; API Access checks `GEMS-API.ALLOWED_API_USERS` through `GEMS-API`.
+- Existing allowlisted users keep access; they do not need new emails or re-verification if already verified.
+- Explore/Modeling/Chat call `require_authorized_user()` (Sign in required if anonymous; allowlist if signed in).
 
 `ALLOWED_USERS` example:
 
@@ -111,3 +131,35 @@ What the script does:
 - **Git object cleanup prompts on Windows/OneDrive:** usually non-fatal; verify commit with `git log -1` and `git status`.
 - **Home page feels slow:** first load runs several cached Databricks stat queries (1 h TTL). The LLM is **not** pinged on Home anymore; Chat/Explore AI run the endpoint only when you use them. Do not set `GEMS_CHECK_LLM_ON_STARTUP=1` in production unless debugging.
 - **Chat feels slow:** Chat uses `DATABRICKS_LLM_ENDPOINT` (Opus) with multiple tool rounds per question; larger models are slower, not faster.
+
+## Update — Public Home (2026-08-17)
+
+**Goal:** Anyone who opens https://gems.bovi-analytics.org can see the **Home** page without Auth0. Data pages stay restricted.
+
+**Azure Easy Auth (Portal → gems-dashboard → Authentication → Edit):**
+
+- App Service authentication: **Enabled** (unchanged)
+- Restrict access: **Allow unauthenticated access** (was Require authentication)
+- Keep **auth0** as the Sign in provider
+- Do **not** remove Auth0 or change `ALLOWED_USERS` for this update
+
+**App behavior after deploy + that setting:**
+
+| Visitor state | Home | Explore / Modeling / Chat / API Access |
+|---------------|------|----------------------------------------|
+| Not signed in | Public overview + Sign in CTA | Sign in required |
+| Signed in, email not in `ALLOWED_USERS` | Warning: need admin approval | Blocked |
+| Signed in, verified email in `ALLOWED_USERS` | Full-access caption | Allowed (API Access also needs `ALLOWED_API_USERS`) |
+
+**Messaging:** Home explains that users may sign in, but data pages still need administrator approval and a verified email.
+
+**Existing allowlisted users:** No email changes and no re-verification if already verified. They Sign in with the same Auth0 account when the session expires.
+
+**Code touched for this update:** `dashboard/gems_auth.py`, `dashboard/app.py` (Home sidebar), plus notes in this README / `.env.example`.
+
+**Smoke test:**
+
+1. Incognito → Home loads without Auth0
+2. Open Explore → Sign in prompt
+3. Non-allowlisted login → Home warning; data pages blocked
+4. Allowlisted login → data pages work as before

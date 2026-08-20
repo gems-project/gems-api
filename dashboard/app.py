@@ -32,7 +32,10 @@ if str(_DASHBOARD_ROOT) not in sys.path:
 from gems_auth import (  # noqa: E402
     get_current_user_info,
     is_authorized,
+    is_signed_in,
     render_email_verification_banner,
+    sign_in_button_html,
+    sign_out_button_html,
 )
 from gems_logo_data import (  # noqa: E402
     GEMS_LOGO_PNG_B64,
@@ -679,26 +682,29 @@ def _hero_html() -> str:
 
 def _render_home() -> None:
     user_info = get_current_user_info()
-    user = user_info.email
-    sidebar_user(user)
-    st.sidebar.markdown(
-        '<a href="/.auth/logout" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
-        "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
-        'text-decoration:none;font-weight:600;">Sign out</a>',
-        unsafe_allow_html=True,
-    )
-    authorized = is_authorized(user)
-    if authorized:
-        st.sidebar.caption(
-            "Use the links above to explore data, fit models, chat, and manage API access."
-        )
+    if is_signed_in(user_info):
+        sidebar_user(user_info.email)
+        st.sidebar.markdown(sign_out_button_html(), unsafe_allow_html=True)
+        if is_authorized(user_info.email):
+            st.sidebar.caption(
+                "Use the links above to explore data, fit models, chat, and manage API access."
+            )
+        else:
+            if not user_info.email_verified:
+                render_email_verification_banner(user_info)
+            st.sidebar.warning(
+                "You are signed in, but data pages still require administrator approval "
+                "and a verified email. Contact the dashboard administrator to request access."
+            )
     else:
-        if not user_info.email_verified:
-            render_email_verification_banner(user_info)
-        st.sidebar.warning(
-            "You are signed in but not yet authorized to access the data pages. "
-            "Contact the dashboard administrator to request access."
+        st.sidebar.markdown("### GEMS Dashboard")
+        st.sidebar.info(
+            "Browse this overview without an account. You may sign in, but access to "
+            "Explore, Modeling, Chat, and API Access still requires administrator "
+            "approval and a verified email."
         )
+        st.sidebar.markdown(sign_in_button_html("Sign in"), unsafe_allow_html=True)
+        st.sidebar.markdown("---")
 
     st.markdown(_hero_html(), unsafe_allow_html=True)
 
@@ -828,8 +834,10 @@ def _render_home() -> None:
         )
 
     st.markdown(
-        '<div class="gems-footer">Authentication by Auth0 through Azure App Service '
-        "Authentication. Use Sign out if you are signed in with the wrong account.</div>",
+        '<div class="gems-footer">Home is public. Sign in with Auth0 to request or use '
+        "data pages; administrator approval and a verified email are required for "
+        "Explore, Modeling, Chat, and API Access. Use Sign out if you are signed in "
+        "with the wrong account.</div>",
         unsafe_allow_html=True,
     )
 

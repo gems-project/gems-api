@@ -22,6 +22,8 @@ FastAPI service: clients send an **API key** in a header → the service returns
 12. [Security checklist](#12-security-checklist)
 13. [PAT vs service principal](#13-pat-vs-service-principal)
 14. [Where commands run: Cloud Shell, Cursor, PowerShell, Portal](#14-where-commands-run-cloud-shell-cursor-powershell-portal)
+15. [Update — Auth0 + API key (Phase 1 → Phase 2) (2026-08-18)](#update--auth0--api-key-phase-1--phase-2-2026-08-18)
+16. [Update — Dual auth live: Auth0 login + API key (2026-08-20)](#update--dual-auth-live-auth0-login--api-key-2026-08-20)
 
 ---
 
@@ -494,3 +496,294 @@ After step 6, open **`https://<default-domain>/docs`** from **Overview** (see §
 ## Extra: Azure CLI quick reference
 
 Copy-paste snippets also live in **`DEPLOY_AZURE.md`** in this folder.
+
+---
+
+## Update — Auth0 + API key (Phase 1 → Phase 2) (2026-08-18)
+
+**Goal:** Keep existing `X-API-Key` scripts working, and add Auth0 login so Swagger (and later all clients) use **key + Auth0**. Auth0 email must match the key owner stored when the key was created in the dashboard.
+
+### Phase 1 (default now)
+
+| Client | Behavior |
+|--------|----------|
+| Old script (`X-API-Key` only) | Still works (`REQUIRE_AUTH0=false`) |
+| Swagger `/docs` | **Authorize** asks for **both** `X-API-Key` and Auth0 OAuth2 |
+| Script that also sends Bearer | Token must be valid; email must equal key `owner` |
+
+App setting: `REQUIRE_AUTH0=false` (or unset).
+
+### Phase 2 (later flip)
+
+Set on **GEMS-API** App Settings:
+
+```text
+REQUIRE_AUTH0=true
+```
+
+Then key-only calls are rejected. Same keys; clients must also send `Authorization: Bearer <Auth0 access token>`.
+
+### New / updated App Settings
+
+| Setting | Purpose |
+|---------|---------|
+| `AUTH0_DOMAIN` | Tenant host (JWT + Swagger authorize URLs) |
+| `AUTH0_AUDIENCE` | Auth0 API Identifier (recommended) |
+| `AUTH0_SWAGGER_CLIENT_ID` | SPA/native client id for `/docs` OAuth2 (PKCE) |
+| `REQUIRE_AUTH0` | `false` = Phase 1; `true` = Phase 2 |
+
+### Auth0 checklist for Swagger
+
+1. Application (SPA or Native) with client id → `AUTH0_SWAGGER_CLIENT_ID`
+2. **Allowed Callback URLs** include:  
+   `https://<GEMS-API-host>/docs/oauth2-redirect`
+3. **Allowed Web Origins** / **Allowed Logout URLs** include the API origin
+4. Access tokens should include an **email** claim (scope `email`, and/or an Auth0 Action adding `email` to the access token for your API audience)
+
+### Swagger usage (Phase 1+)
+
+1. Open `/docs` → **Authorize**
+2. Paste personal `X-API-Key` (`gems_live_…`)
+3. Auth0 → log in (same email as key owner)
+4. Try `GET /tables`
+
+---
+
+## Update — Dual auth live: Auth0 login + API key (2026-08-20)
+
+**Status:** Phase 2 is **on** in production (`REQUIRE_AUTH0=true` on **GEMS-API**). Data downloads through Swagger and through Python/R scripts require **both** Auth0 login and a personal API key. The Auth0 email must match the key’s `owner` (the dashboard account that created the key).
+
+**Why:** A stolen `gems_live_…` key alone is no longer enough. The caller must also complete Auth0 login as that same person.
+
+---
+
+### What “both required” means
+
+Every protected data call (`/tables`, `/version/…`, `/export/….csv`, `/preview/…`, `/query`, …) must send:
+
+| Header | Source | What the API checks |
+|--------|--------|---------------------|
+| `X-API-Key: gems_live_…` | Dashboard → API Access (stored hashed in Azure Table) | Key exists, not revoked, owner is on `ALLOWED_API_USERS` |
+| `Authorization: Bearer <JWT>` | Auth0 after browser login | Token signature / issuer (Auth0 JWKS); email claim present; email == key owner |
+
+If either is missing, invalid, or the emails differ → **401** / **403**. Public endpoints stay open without a key: `/`, `/health`, `/auth/client-config`, `/docs`, `/openapi.json`.
+
+Azure App Setting that enforces “Bearer required”:
+
+```text
+REQUIRE_AUTH0=true
+```
+
+(This is **not** in the user script. It lives only on the **GEMS-API** Web App configuration.)
+
+---
+
+### Azure (GEMS-API) App Settings used for Auth0
+
+| Setting | Example / notes |
+|---------|-----------------|
+| `AUTH0_DOMAIN` | `dev-1bd3bttgj2px61zz.us.auth0.com` (no `https://`) |
+| `AUTH0_AUDIENCE` | Auth0 API Identifier, e.g. `https://gems.bovi-analytics.com/` (**Gems-Backend**) |
+| `AUTH0_SWAGGER_CLIENT_ID` | Client ID of Auth0 app **GEMS API Clients** (Native / PKCE) |
+| `REQUIRE_AUTH0` | `true` = key + Auth0 required for data routes |
+| `ALLOWED_API_USERS` | Comma-separated emails allowed to own API keys / call the API |
+
+Also keep existing Databricks / table / pepper settings unchanged.
+
+Public helper for scripts (no auth):
+
+```text
+GET https://gems-api.bovi-analytics.org/auth/client-config
+```
+
+Returns `domain`, `client_id`, `audience`, `callback`, `scopes` so end users do **not** put Auth0 settings in `.env`.
+
+---
+
+### Auth0 configuration (admin, once)
+
+#### Application: **GEMS API Clients** (Native)
+
+Used by Swagger `/docs` **and** Python/R scripts (PKCE; no client secret).
+
+**Allowed Callback URLs** (comma-separated), for example:
+
+```text
+http://127.0.0.1:8765/callback,
+https://gems-api.bovi-analytics.org/docs/oauth2-redirect,
+https://gems-api-grdzeddudcajhsda.eastus-01.azurewebsites.net/docs/oauth2-redirect
+```
+
+| Callback | Used by |
+|----------|---------|
+| `http://127.0.0.1:8765/callback` | Local Python/R script (tiny server on the user’s PC) |
+| `…/docs/oauth2-redirect` | Swagger UI Authorize |
+
+Also set **Allowed Logout URLs** and **Allowed Web Origins** / **CORS** to the GEMS-API hosts.
+
+Authorize this app for API **Gems-Backend** (audience = `AUTH0_AUDIENCE`).
+
+#### Action: email on access token
+
+API access tokens often omit `email`. Add a **Login / Post Login** Action, deploy it, drag onto the **Login** flow, **Apply**:
+
+```javascript
+exports.onExecutePostLogin = async (event, api) => {
+  if (event.user.email) {
+    api.accessToken.setCustomClaim(
+      "https://gems.bovi-analytics.org/email",
+      event.user.email
+    );
+  }
+};
+```
+
+The API reads that claim (and a few fallbacks) and compares it to the key owner.
+
+---
+
+### End-user workflow (dashboard)
+
+1. Generate a personal key on **GEMS dashboard → API Access** (shown once).
+2. Create `.env` next to their script with **only**:
+
+```text
+GEMS_API_KEY="gems_live_…"
+```
+
+3. Copy a **Python** or **R** example from the dashboard (self-contained; API base URL and Auth0 config are built in / fetched from `/auth/client-config`).
+4. Run the script → browser Auth0 login (same account as the dashboard) → Accept if asked → “GEMS login done” tab → close it.
+5. Refresh examples still **skip** tables whose local `gems_data/*.metadata.json` version matches the API.
+
+Swagger alternative: open `https://gems-api.bovi-analytics.org/docs` → **Authorize** → **Log in** → paste **API key** → Execute.
+
+---
+
+### How Auth0 login and the API key work together
+
+```mermaid
+flowchart TB
+  subgraph Shared["Shared idea"]
+    U[User: same email as GEMS dashboard]
+    K[Personal API key gems_live_…]
+    A[Auth0 login → JWT access token with email claim]
+    API[GEMS-API]
+    U --> K
+    U --> A
+    K -->|"X-API-Key"| API
+    A -->|"Authorization: Bearer JWT"| API
+    API --> M{Email on JWT<br/>equals key owner?}
+    M -->|yes| D[Allow data: tables / export / preview]
+    M -->|no| R[Reject 401/403]
+  end
+```
+
+Below: **Swagger** and **scripts** get the JWT differently; the API check is the same.
+
+---
+
+### Flow A — Swagger UI (`/docs`)
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Swagger as Swagger /docs
+  participant Auth0
+  participant API as GEMS-API
+
+  User->>Swagger: Open /docs → Authorize
+  User->>Swagger: Paste X-API-Key gems_live_…
+  User->>Swagger: Click Log in Authorize
+  Swagger->>Auth0: Redirect OAuth2 + PKCE<br/>(callback = /docs/oauth2-redirect)
+  User->>Auth0: Sign in + Accept
+  Note over Auth0: Login Action adds<br/>email claim to access token
+  Auth0->>Swagger: Redirect with code → token exchange<br/>Swagger stores JWT
+  User->>Swagger: Execute GET /tables or /export/…
+  Swagger->>API: X-API-Key + Authorization Bearer JWT
+  API->>API: Lookup key → owner email
+  API->>API: Verify JWT via Auth0 JWKS → read email
+  API->>API: Match emails REQUIRE_AUTH0=true
+  API-->>Swagger: 200 data or 401/403
+```
+
+**Swagger-specific details**
+
+- Callback allowlisted: `https://<api-host>/docs/oauth2-redirect`
+- Client id pre-filled from `AUTH0_SWAGGER_CLIENT_ID` (leave client_secret empty / hidden)
+- Both schemes required in the Authorize dialog: **Log in** + **API key**
+
+---
+
+### Flow B — Python / R download scripts
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Script as Python or R script
+  participant Tiny as Tiny server<br/>127.0.0.1:8765
+  participant Auth0
+  participant API as GEMS-API
+
+  User->>Script: Run script .env has GEMS_API_KEY only
+  Script->>API: GET /auth/client-config public
+  API-->>Script: domain client_id audience callback
+  Script->>Tiny: Start listening on /callback
+  Script->>Auth0: Open browser authorize + PKCE<br/>redirect_uri=http://127.0.0.1:8765/callback
+  User->>Auth0: Sign in + Accept
+  Note over Auth0: Login Action adds<br/>email claim to access token
+  Auth0->>Tiny: Redirect ?code=…&state=…
+  Tiny-->>Script: Hand code to same process
+  Tiny-->>User: Page GEMS login done close tab
+  Script->>Auth0: POST /oauth/token<br/>code + code_verifier + client_id
+  Auth0-->>Script: access_token JWT
+  Script->>API: X-API-Key + Authorization Bearer JWT<br/>/tables /version /export
+  API->>API: Lookup key → owner email
+  API->>API: Verify JWT → email → match
+  API-->>Script: CSV / JSON rows
+```
+
+**Script-specific details**
+
+- End users never configure Auth0 client id / domain (loaded from `/auth/client-config`)
+- Admin must allow `http://127.0.0.1:8765/callback` on **GEMS API Clients**
+- The one-time **`code`** is not the JWT; the script exchanges it at  
+  `https://<AUTH0_DOMAIN>/oauth/token`  
+  (production example: `https://dev-1bd3bttgj2px61zz.us.auth0.com/oauth/token`)
+- Tiny server exists only during login, on the user’s PC, so Auth0 can return that code to the script
+
+---
+
+### Matching logic (server)
+
+```text
+1. Hash X-API-Key → Azure Table row → owner email
+2. Decode/verify Bearer JWT with Auth0 JWKS
+3. Read email from claims (Action claim https://gems.bovi-analytics.org/email, or fallbacks)
+4. If REQUIRE_AUTH0=true: Bearer required
+5. If token email ≠ owner → 403
+6. Else allow request
+```
+
+Why a JWT (not a raw email header): anyone could send a fake email string. A JWT proves Auth0 authenticated that user and signed the claims.
+
+---
+
+### Deploy / verify checklist
+
+1. Azure **GEMS-API**: `AUTH0_*`, `REQUIRE_AUTH0=true`, restart if settings changed  
+2. Auth0 **GEMS API Clients**: callbacks (Swagger + `127.0.0.1:8765/callback`), audience on Gems-Backend  
+3. Auth0 Action on Login flow → **Apply**  
+4. Swagger: Authorize Log in + key → `GET /tables`  
+5. Script: `.env` with key only → browser login → download / skip by version under `gems_data/`  
+6. Deploy helpers: `tools/deploy_api.ps1`, `tools/deploy_dashboard.ps1` (dashboard holds copy-paste Python/R examples)
+
+---
+
+### Related docs / surfaces
+
+| Surface | Role |
+|---------|------|
+| Dashboard **API Access** | Generate keys; copy Python/R examples |
+| `GET /auth/client-config` | Public Auth0 settings for scripts |
+| `/docs` | Swagger Try-it-out with dual Authorize |
+| This README § Update 2026-08-18 | Original Phase 1 → Phase 2 plan |

@@ -8,11 +8,15 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import streamlit as st
 
 from permissions import has_dashboard_access
+
+AUTH0_LOGIN_PATH = "/.auth/login/auth0"
+AUTH_LOGOUT_PATH = "/.auth/logout"
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,7 @@ class CurrentUser:
     email_verified: bool
     auth0_user_id: str
     bearer_token: str = ""
+    is_authenticated: bool = True
 
 
 def _headers() -> dict[str, str]:
@@ -61,40 +66,101 @@ def _truthy(raw: str | bool | None) -> bool:
     return str(raw or "").strip().lower() in {"true", "1", "yes"}
 
 
+def login_url(redirect_path: str = "/") -> str:
+    """Easy Auth + Auth0 login entrypoint (provider name must be ``auth0``)."""
+    redirect = redirect_path or "/"
+    return f"{AUTH0_LOGIN_PATH}?post_login_redirect_uri={quote(redirect, safe='')}"
+
+
+def logout_url() -> str:
+    # Send users back to Home after Easy Auth logout (avoids a blank /.auth/logout page).
+    return (
+        f"{AUTH_LOGOUT_PATH}?post_logout_redirect_uri="
+        f"{quote('https://gems.bovi-analytics.org/', safe='')}"
+    )
+
+def sign_in_button_html(label: str = "Sign in", redirect_path: str = "/") -> str:
+    return (
+        f'<a href="{login_url(redirect_path)}" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
+        "padding:0.38rem 0.85rem;background:#1f6b42;color:#fff;border-radius:8px;"
+        f'text-decoration:none;font-weight:600;">{label}</a>'
+    )
+
+
+def sign_out_button_html() -> str:
+    return (
+        f'<a href="{logout_url()}" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
+        "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
+        'text-decoration:none;font-weight:600;">Sign out</a>'
+    )
+
+
 def get_current_user_info() -> CurrentUser:
-    """Return signed-in identity details from Easy Auth/Auth0 headers."""
+    """Return Easy Auth/Auth0 identity, or an anonymous visitor when not signed in.
+
+    Local Streamlit (no Easy Auth headers): set ``LOCAL_DEV_USER`` to simulate a
+    signed-in account. If unset, the app behaves as a public visitor.
+    """
     headers = _headers()
     principal = _decode_client_principal(headers)
     claims = _claims_from_principal(principal)
 
-    email = (
+    email_from_auth = (
         claims.get("email")
         or claims.get("emails")
         or headers.get("x-ms-client-principal-name")
-        or os.environ.get("LOCAL_DEV_USER", "local-dev@example.com")
-    )
+        or ""
+    ).strip()
     auth0_user_id = (
         claims.get("sub")
         or headers.get("x-ms-client-principal-id")
-        or os.environ.get("LOCAL_DEV_AUTH0_USER_ID", "")
+        or ""
+    ).strip()
+    bearer_token = (
+        headers.get("x-ms-token-auth0-access-token")
+        or headers.get("x-ms-token-auth0-id-token")
+        or headers.get("authorization", "").removeprefix("Bearer ").strip()
     )
-    email_verified = _truthy(
-        claims.get("email_verified") or os.environ.get("LOCAL_DEV_EMAIL_VERIFIED", "true")
-    )
+
+    if email_from_auth or auth0_user_id or principal:
+        if "email_verified" in claims:
+            email_verified = _truthy(claims.get("email_verified"))
+        else:
+            email_verified = _truthy(os.environ.get("LOCAL_DEV_EMAIL_VERIFIED", "true"))
+        return CurrentUser(
+            email=(email_from_auth or auth0_user_id).strip().lower(),
+            email_verified=email_verified,
+            auth0_user_id=auth0_user_id,
+            bearer_token=bearer_token,
+            is_authenticated=True,
+        )
+
+    local_user = os.environ.get("LOCAL_DEV_USER", "").strip()
+    if local_user:
+        return CurrentUser(
+            email=local_user.lower(),
+            email_verified=_truthy(os.environ.get("LOCAL_DEV_EMAIL_VERIFIED", "true")),
+            auth0_user_id=os.environ.get("LOCAL_DEV_AUTH0_USER_ID", "").strip(),
+            bearer_token=bearer_token,
+            is_authenticated=True,
+        )
+
     return CurrentUser(
-        email=email.strip().lower(),
-        email_verified=email_verified,
-        auth0_user_id=auth0_user_id,
-        bearer_token=(
-            headers.get("x-ms-token-auth0-access-token")
-            or headers.get("x-ms-token-auth0-id-token")
-            or headers.get("authorization", "").removeprefix("Bearer ").strip()
-        ),
+        email="",
+        email_verified=False,
+        auth0_user_id="",
+        bearer_token="",
+        is_authenticated=False,
     )
 
 
 def get_current_user() -> str:
     return get_current_user_info().email
+
+
+def is_signed_in(user: CurrentUser | None = None) -> bool:
+    info = user or get_current_user_info()
+    return bool(info.is_authenticated)
 
 
 def _dashboard_allowed_user(email: str | None) -> bool:
@@ -105,9 +171,8 @@ def _dashboard_allowed_user(email: str | None) -> bool:
     return email.strip().lower() in _allowed_users()
 
 
-def is_authorized(user: str | None) -> bool:
-    info = get_current_user_info()
-    return has_dashboard_access(info)
+def is_authorized(_user: str | None = None) -> bool:
+    return has_dashboard_access(get_current_user_info())
 
 
 def _auth0_management_token() -> str:
@@ -186,7 +251,25 @@ def render_email_verification_banner(info: CurrentUser | None = None) -> None:
 
 
 def require_authorized_user() -> str:
+    """Require Auth0 sign-in + allowlist (+ verified email) for data pages."""
     info = get_current_user_info()
+
+    if not info.is_authenticated:
+        st.error("Sign in is required to access this page.")
+        st.info(
+            "You may sign in with Auth0, but access to Explore, Modeling, Chat, and API Access "
+            "still requires administrator approval and a verified email."
+        )
+        st.markdown(
+            sign_in_button_html("Sign in")
+            + '<a href="/" style="display:inline-block;margin:0.25rem 0 0.75rem 0.5rem;'
+            "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
+            'text-decoration:none;font-weight:600;">Back to home</a>',
+            unsafe_allow_html=True,
+        )
+        st.stop()
+        return ""
+
     if has_dashboard_access(info):
         return info.email
 
@@ -197,14 +280,15 @@ def require_authorized_user() -> str:
 
     st.write(
         f"Signed in as **{info.email}**. The public landing page is open to anyone, "
-        "but the Explore, Modeling, Chat, and API Access pages are restricted. "
-        "Ask the dashboard administrator to add your email to the allowlist if you need data access."
+        "but Explore, Modeling, Chat, and API Access require administrator approval "
+        "and a verified email. Ask the dashboard administrator to add your email to "
+        "the allowlist if you need data access."
     )
     st.markdown(
         '<a href="/" style="display:inline-block;margin-top:0.5rem;margin-right:0.5rem;'
         "padding:0.4rem 0.9rem;background:#1f6b42;color:#fff;border-radius:8px;"
         'text-decoration:none;font-weight:600;">Back to home</a>'
-        '<a href="/.auth/logout" style="display:inline-block;margin-top:0.5rem;'
+        f'<a href="{logout_url()}" style="display:inline-block;margin-top:0.5rem;'
         "padding:0.4rem 0.9rem;background:#6b7280;color:#fff;border-radius:8px;"
         'text-decoration:none;font-weight:600;">Sign out</a>',
         unsafe_allow_html=True,

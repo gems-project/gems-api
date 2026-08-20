@@ -1,28 +1,75 @@
 """
 GEMS read-only CSV API: API-key auth + allowlisted gold tables via Databricks SQL warehouse (PAT).
+
+Phase 1 (default): X-API-Key alone still works. If an Auth0 Bearer token is also sent,
+it must be valid and its email must match the API key owner.
+
+Phase 2: set REQUIRE_AUTH0=true so every data call needs X-API-Key + Auth0 Bearer.
+Swagger /docs Authorize asks for both schemes now (key + Auth0 login).
 """
 
 import csv
 import hashlib
 import hmac
 import io
+import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
+import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.openapi.docs import get_swagger_ui_oauth2_redirect_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 # Local: API/.env. Azure: use Application settings (env vars); .env optional if present.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-app = FastAPI(title="GEMS Gold Export API", version="0.4.0")
+_AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
+_AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "").strip()
+_AUTH0_CLIENT_ID = (
+    os.getenv("AUTH0_SWAGGER_CLIENT_ID", "").strip()
+    or os.getenv("AUTH0_CLIENT_ID", "").strip()
+)
+_SWAGGER_OAUTH_REDIRECT = "/docs/oauth2-redirect"
+
+
+def _swagger_ui_init_oauth() -> dict[str, Any]:
+    """Pre-fill Auth0 so users only click Authorize (no ids/secrets to type)."""
+    cfg: dict[str, Any] = {
+        "usePkceWithAuthorizationCodeGrant": True,
+        "scopes": "openid profile email",
+        "appName": "GEMS",
+    }
+    if _AUTH0_CLIENT_ID:
+        cfg["clientId"] = _AUTH0_CLIENT_ID
+    # Never pre-fill a secret — public PKCE client; empty secret confuses users & Auth0.
+    cfg["clientSecret"] = ""
+    extra: dict[str, str] = {}
+    if _AUTH0_AUDIENCE:
+        extra["audience"] = _AUTH0_AUDIENCE
+    # Fresh Auth0 login each Authorize (SSO alone made Logout→Authorize reuse a dead code).
+    extra["prompt"] = "login"
+    if extra:
+        cfg["additionalQueryStringParams"] = extra
+    return cfg
+
+
+# Custom /docs below (hides OAuth plumbing). Keep redoc default.
+app = FastAPI(
+    title="GEMS Gold Export API",
+    version="0.5.5",
+    docs_url=None,
+    redoc_url="/redoc",
+)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -31,6 +78,20 @@ _IDENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _SINCE_VALUE_RE = re.compile(r"^[0-9A-Za-z\-:.+ ]{1,64}$")
 _API_KEY_PREFIX = "gems_live_"
 _API_KEY_PARTITION = "api_key"
+_JWKS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "keys": None}
+_JWKS_TTL_SECONDS = 3600
+
+_PUBLIC_PATHS = {
+    "/",
+    "/health",
+    "/auth/client-config",
+    "/authz/me",
+    "/authz/allowed-users",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/docs/oauth2-redirect",
+}
 
 
 class GemsSchema(str, Enum):
@@ -42,16 +103,175 @@ class GemsSchema(str, Enum):
 ALLOWED_SCHEMAS = tuple(schema.value for schema in GemsSchema)
 
 
+@app.get("/docs", include_in_schema=False)
+def swagger_ui() -> HTMLResponse:
+    """Minimal Authorize UI: hide OAuth plumbing; clear stale codes so re-login works."""
+    init_oauth = json.dumps(_swagger_ui_init_oauth())
+    openapi_url = app.openapi_url or "/openapi.json"
+    redirect = _SWAGGER_OAUTH_REDIRECT
+    # Full custom page: FastAPI's helper cannot register the auth-code clear plugin.
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{app.title} — docs</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"/>
+  <style>
+    .swagger-ui section.models {{ display: none !important; }}
+    /* Hide OAuth fields users must never fill */
+    .swagger-ui .auth-container .gems-hide-row {{ display: none !important; }}
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+  const GemsAuthFix = function() {{
+    return {{
+      statePlugins: {{
+        auth: {{
+          wrapActions: {{
+            // Swagger bug: after Logout, Authorize reuses the old one-time auth code.
+            authorizeOauth2: (ori) => (payload) => {{
+              try {{
+                if (payload && payload.auth) payload.auth.code = "";
+              }} catch (e) {{}}
+              return ori(payload);
+            }},
+            authPopup: (ori) => (url, oauth2Data) => {{
+              try {{
+                if (oauth2Data && oauth2Data.auth && oauth2Data.auth.code) {{
+                  delete oauth2Data.auth.code;
+                }}
+              }} catch (e) {{}}
+              return ori(url, oauth2Data);
+            }},
+          }},
+        }},
+      }},
+    }};
+  }};
+
+  function simplifyAuthModal(root) {{
+    const box = root || document;
+    // Swagger splits this into two <p> tags inside .scope-def — replace the whole block.
+    const newScopesHelp =
+      "Scopes are used to grant an application different levels of access to data on behalf of the end user. API requires the following scopes. ";
+    box.querySelectorAll(".auth-container").forEach((container) => {{
+      container.querySelectorAll(".scope-def").forEach((el) => {{
+        if (el.dataset.gemsScopesRewritten === "1") return;
+        el.innerHTML = "";
+        const p = document.createElement("p");
+        p.textContent = newScopesHelp;
+        el.appendChild(p);
+        el.dataset.gemsScopesRewritten = "1";
+      }});
+      container.querySelectorAll("label").forEach((label) => {{
+        const t = (label.textContent || "").trim().toLowerCase().replace(":", "");
+        if (t === "client_id" || t === "client_secret") {{
+          const row = label.closest(".wrapper") || label.parentElement;
+          if (row) row.classList.add("gems-hide-row");
+        }}
+      }});
+      container.querySelectorAll("input").forEach((input) => {{
+        const n = (input.getAttribute("name") || input.getAttribute("data-name") || "").toLowerCase();
+        if (n.includes("client_secret")) {{
+          input.value = "";
+          const row = input.closest(".wrapper") || input.parentElement;
+          if (row) row.classList.add("gems-hide-row");
+        }}
+        if (n.includes("client_id")) {{
+          const row = input.closest(".wrapper") || input.parentElement;
+          if (row) row.classList.add("gems-hide-row");
+        }}
+      }});
+      // Hide Auth0 plumbing lines Swagger prints above the buttons.
+      container.querySelectorAll("p").forEach((el) => {{
+        const t = (el.textContent || "").trim();
+        if (
+          t.startsWith("Authorization URL:") ||
+          t.startsWith("Token URL:") ||
+          t.startsWith("Flow:") ||
+          t.startsWith("Application:")
+        ) {{
+          el.classList.add("gems-hide-row");
+        }}
+      }});
+      container.querySelectorAll(".scopes").forEach((el) => el.classList.add("gems-hide-row"));
+    }});
+  }}
+
+  const ui = SwaggerUIBundle({{
+    url: {json.dumps(openapi_url)},
+    dom_id: "#swagger-ui",
+    layout: "BaseLayout",
+    deepLinking: true,
+    persistAuthorization: true,
+    tryItOutEnabled: true,
+    docExpansion: "list",
+    defaultModelsExpandDepth: -1,
+    oauth2RedirectUrl: window.location.origin + {json.dumps(redirect)},
+    presets: [SwaggerUIBundle.presets.apis],
+    plugins: [GemsAuthFix],
+    onComplete: function() {{
+      simplifyAuthModal(document);
+      const obs = new MutationObserver(() => simplifyAuthModal(document));
+      obs.observe(document.getElementById("swagger-ui"), {{ childList: true, subtree: true }});
+    }},
+  }});
+  ui.initOAuth({init_oauth});
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get(_SWAGGER_OAUTH_REDIRECT, include_in_schema=False)
+def swagger_oauth2_redirect():
+    return get_swagger_ui_oauth2_redirect_html()
+
+
 @app.get("/")
 def root():
     return {
         "name": "GEMS Gold Export API",
-        "message": "Use /docs for interactive documentation. Data endpoints require X-API-Key.",
+        "message": "Use /docs → Authorize: Log in (click Authorize only), then paste your API key.",
         "docs": "/docs",
         "health": "/health",
+        "auth_client_config": "/auth/client-config",
         "tables": "/tables",
         "versions": "/versions",
     }
+
+
+@app.get("/auth/client-config")
+def auth_client_config():
+    """Public Auth0 settings for desktop scripts (client id is not a secret)."""
+    if not _AUTH0_DOMAIN or not _AUTH0_CLIENT_ID:
+        raise HTTPException(
+            503,
+            "Auth0 client config is not set on GEMS-API "
+            "(need AUTH0_DOMAIN and AUTH0_SWAGGER_CLIENT_ID).",
+        )
+    return {
+        "domain": _AUTH0_DOMAIN,
+        "client_id": _AUTH0_CLIENT_ID,
+        "audience": _AUTH0_AUDIENCE or None,
+        "callback": "http://127.0.0.1:8765/callback",
+        "scopes": "openid profile email",
+    }
+
+
+def _truthy(raw: str | bool | None) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+
+def _require_auth0() -> bool:
+    return _truthy(os.getenv("REQUIRE_AUTH0", "false"))
 
 
 def _cfg() -> dict:
@@ -118,41 +338,85 @@ def _owner_is_authorized(owner: str) -> bool:
     return False
 
 
-def _bearer_email(authorization: str | None) -> str:
+def _get_jwks() -> dict[str, Any]:
+    domain = _AUTH0_DOMAIN or os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
+    if not domain:
+        raise HTTPException(500, "Server misconfigured: AUTH0_DOMAIN not set")
+    now = time.time()
+    if _JWKS_CACHE["keys"] is not None and now - float(_JWKS_CACHE["fetched_at"]) < _JWKS_TTL_SECONDS:
+        return _JWKS_CACHE["keys"]
+    response = requests.get(f"https://{domain}/.well-known/jwks.json", timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    _JWKS_CACHE["keys"] = payload
+    _JWKS_CACHE["fetched_at"] = now
+    return payload
+
+
+def _bearer_email(authorization: str | None, *, verify_audience: bool = True) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise HTTPException(401, "Missing bearer token")
 
-    domain = os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
-    audience = os.getenv("AUTH0_AUDIENCE", "").strip() or None
+    domain = (_AUTH0_DOMAIN or os.getenv("AUTH0_DOMAIN", "")).strip().rstrip("/")
+    audience = (_AUTH0_AUDIENCE or os.getenv("AUTH0_AUDIENCE", "")).strip() or None
     if not domain:
-        # TODO: In production, set AUTH0_DOMAIN and validate JWT signature/issuer/audience.
-        return os.getenv("LOCAL_DEV_AUTHZ_EMAIL", "")
+        local = os.getenv("LOCAL_DEV_AUTHZ_EMAIL", "").strip().lower()
+        if local:
+            return local
+        raise HTTPException(
+            401,
+            "AUTH0_DOMAIN is not set on GEMS-API. Add it in Azure App Settings and restart.",
+        )
 
     try:
         from jose import jwt
 
-        jwks = requests.get(f"https://{domain}/.well-known/jwks.json", timeout=10).json()
+        jwks = _get_jwks()
         header = jwt.get_unverified_header(token)
-        key = next((item for item in jwks["keys"] if item.get("kid") == header.get("kid")), None)
+        key = next((item for item in jwks.get("keys", []) if item.get("kid") == header.get("kid")), None)
+        if key is None:
+            _JWKS_CACHE["fetched_at"] = 0.0
+            jwks = _get_jwks()
+            key = next((item for item in jwks.get("keys", []) if item.get("kid") == header.get("kid")), None)
         if key is None:
             raise HTTPException(401, "Unknown token signing key")
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=["RS256"],
-            audience=audience,
-            issuer=f"https://{domain}/",
-            options={"verify_aud": bool(audience)},
-        )
+
+        # Dashboard Easy Auth tokens often have a different audience than AUTH0_AUDIENCE
+        # (API Identifier). /authz/me must accept those; data routes can still require audience.
+        decode_kwargs: dict[str, Any] = {
+            "algorithms": ["RS256"],
+            "issuer": f"https://{domain}/",
+            "options": {"verify_aud": bool(audience) and verify_audience},
+        }
+        if audience and verify_audience:
+            decode_kwargs["audience"] = audience
+        claims = jwt.decode(token, key, **decode_kwargs)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(401, f"Invalid bearer token: {e!s}") from e
 
-    return str(claims.get("email") or claims.get("upn") or claims.get("preferred_username") or "").lower()
+    email = str(
+        claims.get("email")
+        or claims.get("https://gems.bovi-analytics.org/email")
+        or claims.get("https://gems.bovi-analytics.com/email")
+        or claims.get("upn")
+        or claims.get("preferred_username")
+        or ""
+    ).strip().lower()
+    if not email:
+        raise HTTPException(
+            401,
+            "Auth0 access token has no email claim. In Auth0: Actions → add a Login Action "
+            "that sets https://gems.bovi-analytics.org/email, add it to the Login flow, "
+            "Apply, then Logout and Authorize again in Swagger (or re-run the script).",
+        )
+    if "email_verified" in claims and not _truthy(claims.get("email_verified")):
+        raise HTTPException(403, "Auth0 email is not verified")
+    return email
 
 
 def _utc_now() -> str:
@@ -180,7 +444,16 @@ def _api_key_table_client():
         raise HTTPException(500, f"Server misconfigured: API key table unavailable: {e!s}") from e
 
 
-def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> dict:
+def get_api_key(
+    x_api_key: Annotated[str | None, Depends(api_key_header)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict:
+    """Validate API key; optionally/require Auth0 Bearer and match emails.
+
+    Phase 1 (REQUIRE_AUTH0=false): key alone is enough. If Bearer is sent, it must
+    match the key owner email.
+    Phase 2 (REQUIRE_AUTH0=true): key + valid Auth0 Bearer with matching email.
+    """
     c = _cfg()
     if not x_api_key or not x_api_key.startswith(_API_KEY_PREFIX):
         raise HTTPException(401, "Invalid or missing API key (use header X-API-Key)")
@@ -194,9 +467,38 @@ def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> di
     if str(entity.get("revokedAt", "") or ""):
         raise HTTPException(401, "API key has been revoked")
 
-    owner = str(entity.get("owner", ""))
+    owner = str(entity.get("owner", "")).strip().lower()
     if not _owner_is_authorized(owner):
         raise HTTPException(403, "API key owner is no longer authorized")
+
+    has_bearer = bool(authorization and authorization.lower().startswith("bearer "))
+    auth0_verified = False
+    if has_bearer:
+        try:
+            token_email = _bearer_email(authorization)
+        except HTTPException:
+            # Phase 1: Swagger often sends a junk/empty Auth0 value; ignore and use key only.
+            if _require_auth0():
+                raise
+            token_email = ""
+        if token_email:
+            if token_email != owner:
+                raise HTTPException(
+                    403,
+                    f"Auth0 email ({token_email}) does not match API key owner ({owner})",
+                )
+            auth0_verified = True
+        elif _require_auth0():
+            raise HTTPException(
+                401,
+                "Auth0 Bearer token required with an email claim matching the API key owner.",
+            )
+    elif _require_auth0():
+        raise HTTPException(
+            401,
+            "Auth0 Bearer token required. Log in via /docs Authorize (Auth0) or the "
+            "updated client script, and send Authorization: Bearer <token> with X-API-Key.",
+        )
 
     try:
         entity["lastUsedAt"] = _utc_now()
@@ -208,6 +510,7 @@ def get_api_key(x_api_key: Annotated[str | None, Depends(api_key_header)]) -> di
         "owner": owner,
         "name": str(entity.get("name", "")),
         "key_hash": key_hash,
+        "auth0_verified": auth0_verified,
     }
 
 
@@ -321,7 +624,8 @@ def list_tables(_: Annotated[str, Depends(get_api_key)]):
 
 @app.get("/authz/me")
 def authz_me(authorization: Annotated[str | None, Header()] = None):
-    email = _bearer_email(authorization)
+    # Dashboard Easy Auth tokens are not issued for AUTH0_AUDIENCE; skip aud check here.
+    email = _bearer_email(authorization, verify_audience=False)
     return {"api_access": _owner_is_authorized(email), "email": email}
 
 
@@ -649,3 +953,71 @@ def query(req: QueryRequest, _: Annotated[str, Depends(get_api_key)]):
         "limit_applied": limit,
         "truncated": limit is not None and len(data) >= limit,
     }
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=(
+            "GEMS gold export API.\n\n"
+            "**Authorize** (lock icon):\n"
+            "1. **Log in** — click **Authorize** only (do not type client_id or client_secret)\n"
+            "2. **API key** — paste your `gems_live_…` key"
+        ),
+        routes=app.routes,
+    )
+    domain = (_AUTH0_DOMAIN or os.getenv("AUTH0_DOMAIN", "")).strip().rstrip("/")
+    components = schema.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    # Friendly names only — drop any auto-generated HTTPBearer / OAuth schemes.
+    for dead in list(security_schemes):
+        security_schemes.pop(dead, None)
+
+    # Scheme key order = display order in Authorize dialog.
+    if domain:
+        security_schemes["Log in"] = {
+            "type": "oauth2",
+            "description": (
+                "Click **Authorize** below — nothing to type. "
+                "Use the same email as the GEMS dashboard."
+            ),
+            "flows": {
+                "authorizationCode": {
+                    "authorizationUrl": f"https://{domain}/authorize",
+                    "tokenUrl": f"https://{domain}/oauth/token",
+                    "scopes": {
+                        "openid": " ",
+                        "profile": " ",
+                        "email": " ",
+                    },
+                }
+            },
+        }
+    security_schemes["API key"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Your gems_live_… key from the dashboard.",
+    }
+
+    if domain:
+        dual_security = [{"Log in": ["openid", "profile", "email"], "API key": []}]
+    else:
+        dual_security = [{"API key": []}]
+
+    for path, path_item in schema.get("paths", {}).items():
+        if path in _PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
+            continue
+        for method, operation in list(path_item.items()):
+            if method in {"get", "post", "put", "patch", "delete"} and isinstance(operation, dict):
+                operation["security"] = dual_security
+
+    schema["security"] = dual_security
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi

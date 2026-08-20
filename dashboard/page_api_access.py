@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+"""API Access: generate keys and copy Python/R examples (key + Auth0)."""
+
 from __future__ import annotations
 
 import os
@@ -15,10 +18,11 @@ from gems_api_keys import ApiKeyStore  # noqa: E402
 from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_ui import page_header, sidebar_user  # noqa: E402
 from permissions import has_api_access  # noqa: E402
+
 st.set_page_config(page_title="API Access", layout="wide", page_icon="key")
 page_header(
     "API Access",
-    "Generate API keys and use version-aware scripts to query or refresh GEMS data.",
+    "Generate API keys and download data with Auth0 login + your personal key.",
 )
 
 user = require_authorized_user()
@@ -46,24 +50,23 @@ if not has_api_access(user_info, user_info.bearer_token):
     )
     st.stop()
 
-try:
-    resp = requests.get(
-        f"{api_base_url}/authz/me",
-        headers={"Authorization": f"Bearer {user_info.bearer_token}"},
-        timeout=5,
-    )
-    if resp.status_code in (401, 403):
-        st.error(
-            "Your email is allowed by the dashboard but the API rejected your token. "
-            "Confirm the same email is in gems-api ALLOWED_API_USERS, then redeploy the gems-api Web App."
+# Soft check — do not lock users out if dashboard token audience differs from API.
+if api_base_url and user_info.bearer_token:
+    try:
+        response = requests.get(
+            f"{api_base_url}/authz/me",
+            headers={"Authorization": f"Bearer {user_info.bearer_token}"},
+            timeout=15,
         )
-        st.stop()
-except requests.RequestException as exc:
-    st.error(f"Could not reach the API service: {exc}")
-    st.stop()
+        if response.ok and not response.json().get("allowed_api", True):
+            st.info(
+                "The API reports your account may not be on ALLOWED_API_USERS yet. "
+                "Ask an admin to confirm that list if key use fails."
+            )
+    except Exception:
+        pass
 
 store = ApiKeyStore()
-
 if not store.enabled:
     st.error(
         "API key storage is not configured. Set `AZURE_TABLES_CONNECTION_STRING`, "
@@ -74,14 +77,14 @@ if not store.enabled:
     st.stop()
 
 st.markdown(
-    "Create an API key for Python, R, curl, or other tools. Keys are shown only once. "
-    "Only API-tier users can access this page."
+    "Create an API key, put it in `.env`, then copy a Python example. "
+    "When Auth0 opens, sign in with the **same account** you use on this dashboard."
 )
 
 with st.form("create_api_key"):
     key_name = st.text_input(
         "Key name",
-        placeholder="e.g., PN laptop, RStudio script, shared analysis workflow",
+        placeholder="e.g., laptop, RStudio script, analysis workflow",
     )
     submitted = st.form_submit_button("Generate API key", type="primary")
 
@@ -129,256 +132,476 @@ else:
 st.markdown("### API connection details")
 base_display = api_base_url or "https://gems-api.bovi-analytics.org"
 docs_display = f"{base_display}/docs"
+
 st.code(base_display, language="text")
-st.markdown("Interactive API documentation:")
-st.markdown(f"[Open Swagger UI]({docs_display})")
 st.markdown(
-    "Every data request must include an `X-API-Key` header. The examples below "
-    "read the key from `GEMS_API_KEY` instead of pasting it directly into commands."
+    f"[Open Swagger UI]({docs_display}) — **Authorize**: **Log in**, then paste your **API key**."
 )
 
 if allowed_tables:
     with st.expander("Available table names", expanded=False):
         st.write(", ".join(f"`{table}`" for table in allowed_tables))
 
+env_example = 'GEMS_API_KEY="gems_live_your_real_key_here"'
 
-python_all_tables = dedent(
+# Shared Auth0+key helper embedded in every Python example (one file to copy).
+_python_auth_helper = dedent(
     f"""
+    import base64
+    import hashlib
     import json
     import os
+    import secrets
+    import threading
+    import time
+    import urllib.parse
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
     from pathlib import Path
 
     import requests
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent / ".env")
-
-    API_KEY = os.environ["GEMS_API_KEY"]
+    # API URL is built into this script — only put your key in .env
     BASE_URL = "{base_display}"
-    DATA_DIR = Path("gems_data")
-    DATA_DIR.mkdir(exist_ok=True)
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    API_KEY = os.environ.get("GEMS_API_KEY", "").strip()
+    if not API_KEY:
+        raise SystemExit("Add GEMS_API_KEY to a .env file next to this script.")
 
-    headers = {{"X-API-Key": API_KEY}}
 
-    def read_metadata(table):
-        path = DATA_DIR / f"{{table}}.metadata.json"
-        if not path.exists():
-            return None
-        return json.loads(path.read_text())
+    def gems_headers():
+        # Open Auth0 in the browser, then return X-API-Key + Bearer headers.
+        cfg = requests.get(f"{{BASE_URL}}/auth/client-config", timeout=30).json()
+        domain = cfg["domain"].rstrip("/")
+        client_id = cfg["client_id"]
+        audience = (cfg.get("audience") or "").strip()
+        scopes = cfg.get("scopes") or "openid profile email"
+        port = 8765
+        redirect_uri = f"http://127.0.0.1:{{port}}/callback"
 
-    def write_metadata(table, metadata):
-        path = DATA_DIR / f"{{table}}.metadata.json"
-        path.write_text(json.dumps(metadata, indent=2, default=str))
+        def b64url(raw: bytes) -> str:
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
-    def get_json(path):
-        response = requests.get(f"{{BASE_URL}}{{path}}", headers=headers, timeout=60)
-        response.raise_for_status()
-        return response.json()
+        verifier = b64url(secrets.token_bytes(32))
+        challenge = b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+        state = b64url(secrets.token_bytes(16))
+        result, error = {{}}, {{}}
 
-    tables = get_json("/tables")["tables"]
-    updated = 0
-    skipped = 0
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                return
 
-    print("Checking GEMS tables...")
+            def do_GET(self):
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if qs.get("state", [""])[0] != state:
+                    error["m"] = "state mismatch"
+                    self.send_response(400)
+                elif "error" in qs:
+                    error["m"] = qs.get("error_description", qs.get("error", ["error"]))[0]
+                    self.send_response(400)
+                else:
+                    result["code"] = qs.get("code", [""])[0]
+                    self.send_response(200)
+                body = b"GEMS login done. You can close this tab."
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-    for table in tables:
-        remote = get_json(f"/version/{{table}}")
-        local = read_metadata(table)
-        remote_version = remote["version"]
-        local_version = None if local is None else local.get("version")
+        server = HTTPServer(("127.0.0.1", port), Handler)
+        threading.Thread(target=server.handle_request, daemon=True).start()
+        params = {{
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scopes,
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }}
+        if audience:
+            params["audience"] = audience
+        url = f"https://{{domain}}/authorize?{{urllib.parse.urlencode(params)}}"
+        print("Opening browser for Auth0 login…")
+        print(
+            "If Auth0 shows Callback URL mismatch, add this exact URL to "
+            "Auth0 → Applications → GEMS API Clients → Allowed Callback URLs:"
+        )
+        print(f"  {{redirect_uri}}")
+        webbrowser.open(url)
+        deadline = time.time() + 300
+        while time.time() < deadline and not result and not error:
+            time.sleep(0.2)
+        server.server_close()
+        if error:
+            raise RuntimeError(error["m"])
+        if not result.get("code"):
+            raise RuntimeError("Auth0 login timed out.")
+        token = requests.post(
+            f"https://{{domain}}/oauth/token",
+            data={{
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": result["code"],
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+            }},
+            timeout=30,
+        )
+        token.raise_for_status()
+        access_token = token.json().get("access_token") or ""
+        if not access_token:
+            raise RuntimeError("Auth0 did not return an access token.")
+        return {{"X-API-Key": API_KEY, "Authorization": f"Bearer {{access_token}}"}}
+    """
+).strip()
 
-        if local_version == remote_version:
-            print(f"{{table}} is already up to date. version={{remote_version}}")
-            skipped += 1
-            continue
+python_all_tables = (
+    _python_auth_helper
+    + "\n\n"
+    + dedent(
+        """
+        import json
+        from pathlib import Path
 
-        if local_version is None:
-            print(f"{{table}} has no local copy. Downloading version {{remote_version}}...")
-        else:
-            print(
-                f"{{table}} has a newer version. "
-                f"local={{local_version}} remote={{remote_version}}. Downloading..."
+        DATA_DIR = Path("gems_data")
+        DATA_DIR.mkdir(exist_ok=True)
+        headers = gems_headers()
+
+        def read_metadata(table):
+            path = DATA_DIR / f"{table}.metadata.json"
+            if not path.exists():
+                return None
+            return json.loads(path.read_text())
+
+        def write_metadata(table, metadata):
+            path = DATA_DIR / f"{table}.metadata.json"
+            path.write_text(json.dumps(metadata, indent=2, default=str))
+
+        def get_json(path):
+            response = requests.get(f"{BASE_URL}{path}", headers=headers, timeout=60)
+            response.raise_for_status()
+            return response.json()
+
+        tables = get_json("/tables")["tables"]
+        updated = 0
+        skipped = 0
+        print("Checking GEMS tables...")
+
+        for table in tables:
+            remote = get_json(f"/version/{table}")
+            local = read_metadata(table)
+            remote_version = remote["version"]
+            local_version = None if local is None else local.get("version")
+
+            if local_version == remote_version:
+                print(f"{table} is already up to date. version={remote_version}")
+                skipped += 1
+                continue
+
+            if local_version is None:
+                print(f"{table} has no local copy. Downloading version {remote_version}...")
+            else:
+                print(
+                    f"{table} has a newer version. "
+                    f"local={local_version} remote={remote_version}. Downloading..."
+                )
+
+            response = requests.get(
+                f"{BASE_URL}/export/{table}.csv",
+                headers=headers,
+                timeout=600,
             )
+            response.raise_for_status()
+            csv_path = DATA_DIR / f"{table}.csv"
+            csv_path.write_bytes(response.content)
+            write_metadata(table, remote)
+            print(f"Saved {csv_path}")
+            updated += 1
 
+        print(f"Done. Updated {updated} table(s); skipped {skipped} table(s).")
+        """
+    ).strip()
+)
+
+python_query = (
+    _python_auth_helper
+    + "\n\n"
+    + dedent(
+        """
+        import pandas as pd
+
+        TABLE = "goldbodyweight"
+        headers = gems_headers()
         response = requests.get(
-            f"{{BASE_URL}}/export/{{table}}.csv",
+            f"{BASE_URL}/preview/{TABLE}",
             headers=headers,
-            timeout=600,
+            params={"limit": 100},
+            timeout=60,
         )
         response.raise_for_status()
+        df = pd.DataFrame(response.json()["rows"])
+        print(df.head())
+        """
+    ).strip()
+)
 
-        csv_path = DATA_DIR / f"{{table}}.csv"
-        csv_path.write_bytes(response.content)
-        write_metadata(table, remote)
-        print(f"Saved {{csv_path}}")
-        updated += 1
-
-    print(f"Done. Updated {{updated}} table(s); skipped {{skipped}} table(s).")
-    """
-).strip()
-
-python_query = dedent(
+# Shared Auth0+key helper embedded in every R example (one file to copy).
+# Packages: httr2, httpuv, jsonlite, openssl
+_r_auth_helper = dedent(
     f"""
-    import os
-    from pathlib import Path
-
-    import pandas as pd
-    import requests
-    from dotenv import load_dotenv
-
-    load_dotenv(Path(__file__).resolve().parent / ".env")
-
-    API_KEY = os.environ.get("GEMS_API_KEY", "")
-    if not API_KEY:
-        raise RuntimeError("GEMS_API_KEY is not set. Add it to .env or the environment.")
-
-    BASE_URL = "{base_display}"
-    TABLE = "goldbodyweight"
-
-    headers = {{"X-API-Key": API_KEY}}
-
-    response = requests.get(
-        f"{{BASE_URL}}/preview/{{TABLE}}",
-        headers=headers,
-        params={{"limit": 100}},
-        timeout=60,
-    )
-    response.raise_for_status()
-
-    payload = response.json()
-    df = pd.DataFrame(payload["rows"])
-    print(df.head())
-    """
-).strip()
-
-r_query = dedent(
-    f"""
+    # install.packages(c("httr2", "httpuv", "jsonlite", "openssl"))
     library(httr2)
+    library(httpuv)
     library(jsonlite)
+    library(openssl)
 
-    # Load .env next to this script
-    args <- commandArgs(trailingOnly = FALSE)
-    file_line <- grep("^--file=", args, value = TRUE)
-    env_path <- if (length(file_line)) {{
-      script_file <- sub("^--file=", "", file_line)
-      file.path(dirname(normalizePath(script_file, winslash = "/")), ".env")
-    }} else {{
+    BASE_URL <- "{base_display}"
+
+    # Find .env next to this script (works with source() and Rscript).
+    .env_path <- local({{
+      for (i in seq_len(sys.nframe())) {{
+        ofile <- sys.frame(i)$ofile
+        if (!is.null(ofile) && nzchar(ofile)) {{
+          return(file.path(dirname(normalizePath(ofile, winslash = "/", mustWork = FALSE)), ".env"))
+        }}
+      }}
+      args <- commandArgs(trailingOnly = FALSE)
+      file_line <- grep("^--file=", args, value = TRUE)
+      if (length(file_line)) {{
+        script_file <- sub("^--file=", "", file_line)
+        return(file.path(dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE)), ".env"))
+      }}
       file.path(getwd(), ".env")
+    }})
+
+    load_gems_env <- function(path) {{
+      if (!file.exists(path)) return(invisible(FALSE))
+      lines <- readLines(path, warn = FALSE, encoding = "UTF-8")
+      for (line in lines) {{
+        line <- sub("^\\\\s+", "", sub("\\\\s+$", "", line))
+        if (!nzchar(line) || startsWith(line, "#")) next
+        if (!grepl("=", line, fixed = TRUE)) next
+        key <- sub("^\\\\s+", "", sub("\\\\s+$", "", sub("=.*$", "", line)))
+        val <- sub("^\\\\s+", "", sub("\\\\s+$", "", sub("^[^=]*=", "", line)))
+        if (startsWith(val, "\\"") && endsWith(val, "\\"")) {{
+          val <- substr(val, 2, nchar(val) - 1)
+        }} else if (startsWith(val, "'") && endsWith(val, "'")) {{
+          val <- substr(val, 2, nchar(val) - 1)
+        }}
+        if (nzchar(key)) do.call(Sys.setenv, setNames(list(val), key))
+      }}
+      invisible(TRUE)
     }}
-    if (file.exists(env_path)) {{
-      readRenviron(env_path)
+
+    load_gems_env(.env_path)
+    API_KEY <- Sys.getenv("GEMS_API_KEY", unset = "")
+    if (!nzchar(API_KEY)) {{
+      stop(
+        "Add GEMS_API_KEY to a .env file next to this script.\\n",
+        "Looked for: ", .env_path,
+        call. = FALSE
+      )
     }}
 
-    api_key <- Sys.getenv("GEMS_API_KEY", unset = "")
-    if (!nzchar(api_key)) {{
-      stop("GEMS_API_KEY is not set. Add it to .env or the environment.", call. = FALSE)
+    b64url <- function(raw) {{
+      x <- openssl::base64_encode(raw)
+      x <- gsub("+", "-", x, fixed = TRUE)
+      x <- gsub("/", "_", x, fixed = TRUE)
+      gsub("=+$", "", x)
     }}
 
-    base_url <- "{base_display}"
-    table <- "goldbodyweight"
+    parse_qs <- function(q) {{
+      if (is.null(q) || !nzchar(q)) return(list())
+      q <- sub("^\\\\?", "", q)
+      parts <- strsplit(q, "&", fixed = TRUE)[[1]]
+      out <- list()
+      for (p in parts) {{
+        kv <- strsplit(p, "=", fixed = TRUE)[[1]]
+        key <- utils::URLdecode(kv[[1]])
+        val <- if (length(kv) > 1) utils::URLdecode(paste(kv[-1], collapse = "=")) else ""
+        out[[key]] <- val
+      }}
+      out
+    }}
 
-    req <- request(paste0(base_url, "/preview/", table)) |>
-      req_headers("X-API-Key" = api_key) |>
-      req_url_query(limit = 100) |>
-      req_timeout(60)
+    gems_headers <- function() {{
+      cfg <- resp_body_json(
+        request(paste0(BASE_URL, "/auth/client-config")) |> req_timeout(30) |> req_perform()
+      )
+      domain <- sub("/+$", "", cfg$domain)
+      client_id <- cfg$client_id
+      audience <- if (!is.null(cfg$audience)) cfg$audience else ""
+      scopes <- if (!is.null(cfg$scopes) && nzchar(cfg$scopes)) cfg$scopes else "openid profile email"
+      port <- 8765L
+      redirect_uri <- sprintf("http://127.0.0.1:%s/callback", port)
 
-    resp <- req_perform(req)
-    resp_check_status(resp)
-    payload <- resp_body_json(resp, simplifyVector = TRUE)
+      verifier <- b64url(openssl::rand_bytes(32))
+      challenge <- b64url(openssl::sha256(charToRaw(verifier)))
+      state <- b64url(openssl::rand_bytes(16))
+      ready <- new.env(parent = emptyenv())
+      ready$code <- NULL
+      ready$error <- NULL
 
-    df <- as.data.frame(payload$rows)
-    print(head(df))
+      srv <- httpuv::startServer("127.0.0.1", port, list(
+        call = function(req) {{
+          qs <- parse_qs(req$QUERY_STRING)
+          if (!identical(qs$state, state)) {{
+            ready$error <- "state mismatch"
+            status <- 400L
+          }} else if (!is.null(qs$error)) {{
+            ready$error <- if (!is.null(qs$error_description)) qs$error_description else qs$error
+            status <- 400L
+          }} else {{
+            ready$code <- qs$code
+            status <- 200L
+          }}
+          list(
+            status = status,
+            headers = list("Content-Type" = "text/plain; charset=utf-8"),
+            body = "GEMS login done. You can close this tab."
+          )
+        }}
+      ))
+      on.exit(try(httpuv::stopServer(srv), silent = TRUE), add = TRUE)
+
+      params <- list(
+        response_type = "code",
+        client_id = client_id,
+        redirect_uri = redirect_uri,
+        scope = scopes,
+        state = state,
+        code_challenge = challenge,
+        code_challenge_method = "S256"
+      )
+      if (nzchar(audience)) params$audience <- audience
+      auth_url <- paste0(
+        "https://", domain, "/authorize?",
+        paste(sprintf("%s=%s", names(params), vapply(params, utils::URLencode, "", reserved = TRUE)), collapse = "&")
+      )
+      message("Opening browser for Auth0 login…")
+      message(
+        "If Auth0 shows Callback URL mismatch, add this exact URL to ",
+        "Auth0 → Applications → GEMS API Clients → Allowed Callback URLs:"
+      )
+      message("  ", redirect_uri)
+      utils::browseURL(auth_url)
+
+      deadline <- Sys.time() + 300
+      while (is.null(ready$code) && is.null(ready$error) && Sys.time() < deadline) {{
+        httpuv::service(200)
+      }}
+      if (!is.null(ready$error)) stop(ready$error, call. = FALSE)
+      if (is.null(ready$code) || !nzchar(ready$code)) stop("Auth0 login timed out.", call. = FALSE)
+
+      token <- resp_body_json(
+        request(paste0("https://", domain, "/oauth/token")) |>
+          req_body_form(
+            grant_type = "authorization_code",
+            client_id = client_id,
+            code = ready$code,
+            redirect_uri = redirect_uri,
+            code_verifier = verifier
+          ) |>
+          req_timeout(30) |>
+          req_perform()
+      )
+      access_token <- token$access_token
+      if (is.null(access_token) || !nzchar(access_token)) {{
+        stop("Auth0 did not return an access token.", call. = FALSE)
+      }}
+      c("X-API-Key" = API_KEY, Authorization = paste("Bearer", access_token))
+    }}
     """
 ).strip()
 
-r_all_tables = dedent(
-    f"""
-    library(httr2)
-    library(jsonlite)
+r_query = (
+    _r_auth_helper
+    + "\n\n"
+    + dedent(
+        """
+        TABLE <- "goldbodyweight"
+        headers <- gems_headers()
+        resp <- request(paste0(BASE_URL, "/preview/", TABLE)) |>
+          req_headers(!!!as.list(headers)) |>
+          req_url_query(limit = 100) |>
+          req_timeout(60) |>
+          req_perform()
+        payload <- resp_body_json(resp, simplifyVector = TRUE)
+        print(utils::head(as.data.frame(payload$rows)))
+        """
+    ).strip()
+)
 
-    # Load .env next to this script
-    args <- commandArgs(trailingOnly = FALSE)
-    file_line <- grep("^--file=", args, value = TRUE)
-    env_path <- if (length(file_line)) {{
-      script_file <- sub("^--file=", "", file_line)
-      file.path(dirname(normalizePath(script_file, winslash = "/")), ".env")
-    }} else {{
-      file.path(getwd(), ".env")
-    }}
-    if (file.exists(env_path)) {{
-      readRenviron(env_path)
-    }}
+r_all_tables = (
+    _r_auth_helper
+    + "\n\n"
+    + dedent(
+        """
+        data_dir <- "gems_data"
+        dir.create(data_dir, showWarnings = FALSE)
+        headers <- gems_headers()
 
-    api_key <- Sys.getenv("GEMS_API_KEY", unset = "")
-    if (!nzchar(api_key)) {{
-      stop("GEMS_API_KEY is not set. Add it to .env or the environment.", call. = FALSE)
-    }}
+        get_json <- function(path) {
+          resp <- request(paste0(BASE_URL, path)) |>
+            req_headers(!!!as.list(headers)) |>
+            req_timeout(60) |>
+            req_perform()
+          resp_body_json(resp)
+        }
 
-    base_url <- "{base_display}"
-    data_dir <- "gems_data"
-    dir.create(data_dir, showWarnings = FALSE)
+        read_metadata <- function(table) {
+          path <- file.path(data_dir, paste0(table, ".metadata.json"))
+          if (!file.exists(path)) return(NULL)
+          jsonlite::fromJSON(path)
+        }
 
-    get_json <- function(path) {{
-      req <- request(paste0(base_url, path)) |>
-        req_headers("X-API-Key" = api_key) |>
-        req_timeout(60)
-      resp <- req_perform(req)
-      resp_check_status(resp)
-      resp_body_json(resp)
-    }}
+        write_metadata <- function(table, metadata) {
+          path <- file.path(data_dir, paste0(table, ".metadata.json"))
+          jsonlite::write_json(metadata, path, auto_unbox = TRUE, pretty = TRUE)
+        }
 
-    read_metadata <- function(table) {{
-      path <- file.path(data_dir, paste0(table, ".metadata.json"))
-      if (!file.exists(path)) return(NULL)
-      fromJSON(path)
-    }}
+        tables <- unlist(get_json("/tables")$tables)
+        updated <- 0
+        skipped <- 0
+        message("Checking GEMS tables...")
 
-    write_metadata <- function(table, metadata) {{
-      path <- file.path(data_dir, paste0(table, ".metadata.json"))
-      write_json(metadata, path, auto_unbox = TRUE, pretty = TRUE)
-    }}
+        for (table in tables) {
+          remote <- get_json(paste0("/version/", table))
+          local <- read_metadata(table)
+          remote_version <- remote$version
+          local_version <- if (is.null(local)) NULL else local$version
 
-    tables <- get_json("/tables")$tables
-    updated <- 0
-    skipped <- 0
+          if (identical(local_version, remote_version)) {
+            message(table, " is already up to date. version=", remote_version)
+            skipped <- skipped + 1
+            next
+          }
 
-    message("Checking GEMS tables...")
+          if (is.null(local_version)) {
+            message(table, " has no local copy. Downloading version ", remote_version, "...")
+          } else {
+            message(table, " has a newer version. local=", local_version,
+                    " remote=", remote_version, ". Downloading...")
+          }
 
-    for (table in tables) {{
-      remote <- get_json(paste0("/version/", table))
-      local <- read_metadata(table)
-      remote_version <- remote$version
-      local_version <- if (is.null(local)) NULL else local$version
+          resp <- request(paste0(BASE_URL, "/export/", table, ".csv")) |>
+            req_headers(!!!as.list(headers)) |>
+            req_timeout(600) |>
+            req_perform()
+          csv_path <- file.path(data_dir, paste0(table, ".csv"))
+          writeBin(resp_body_raw(resp), csv_path)
+          write_metadata(table, remote)
+          message("Saved ", csv_path)
+          updated <- updated + 1
+        }
 
-      if (identical(local_version, remote_version)) {{
-        message(table, " is already up to date. version=", remote_version)
-        skipped <- skipped + 1
-        next
-      }}
+        message("Done. Updated ", updated, " table(s); skipped ", skipped, " table(s).")
+        """
+    ).strip()
+)
 
-      if (is.null(local_version)) {{
-        message(table, " has no local copy. Downloading version ", remote_version, "...")
-      }} else {{
-        message(table, " has a newer version. local=", local_version,
-                " remote=", remote_version, ". Downloading...")
-      }}
-
-      req <- request(paste0(base_url, "/export/", table, ".csv")) |>
-        req_headers("X-API-Key" = api_key) |>
-        req_timeout(600)
-      resp <- req_perform(req)
-      resp_check_status(resp)
-
-      csv_path <- file.path(data_dir, paste0(table, ".csv"))
-      writeBin(resp_body_raw(resp), csv_path)
-      write_metadata(table, remote)
-      message("Saved ", csv_path)
-      updated <- updated + 1
-    }}
-
-    message("Done. Updated ", updated, " table(s); skipped ", skipped, " table(s).")
-    """
-).strip()
 
 endpoints = pd.DataFrame(
     [
@@ -392,61 +615,66 @@ endpoints = pd.DataFrame(
     ]
 )
 
-with st.expander("API documentation and examples", expanded=False):
-    quick, python_tab, r_tab, endpoints_tab, security_tab = st.tabs(
-        ["Quick start", "Python", "R", "Endpoints", "Security"]
+with st.expander("API documentation and examples", expanded=True):
+    quick, python_tab, r_tab, endpoints_tab, tips_tab = st.tabs(
+        ["Quick start", "Python", "R", "Endpoints", "Tips"]
     )
 
     with quick:
         st.markdown(
             """
-            **Recommended workflow**
-
-            1. Generate an API key above.
-            2. Create a `.env` file in the same folder as your Python or R script:
+            1. **Generate an API key** above and copy it right away (it is shown only once).
+            2. Create a `.env` file next to your script with only:
             """
         )
-        st.code('GEMS_API_KEY="gems_live_your_real_key_here"', language="text")
+        st.code(env_example, language="text")
         st.markdown(
-            """
-            3. Use the Python or R **All-table version-aware refresh** script in the next tabs.
-               It checks table versions, prints which tables are already current or changed,
-               downloads only changed tables, and overwrites local CSV files.
+            f"""
+            3. Copy a script from the **Python** or **R** tab into your own file and run it.
+            4. A browser window opens for Auth0 — sign in with the **same account** you use on this dashboard.
+            5. Downloaded tables (full refresh example) are saved under `gems_data/`.
 
-            Run the refresh script whenever you want to check for updates. If a table has a
-            newer version, the script tells you and downloads the latest snapshot. If nothing
-            changed, it skips the download.
+            **Optional check in the browser:** open [Swagger]({docs_display}) → **Authorize** →
+            **Log in** → paste **API key** → **GET /tables** → **Execute**.
             """
         )
-        st.markdown(
-            "Opening the base API URL directly may show a short JSON service message. "
-            "For interactive browser testing, use Swagger UI:"
-        )
-        st.code(docs_display, language="text")
 
     with python_tab:
-        st.markdown("All-table version-aware refresh:")
-        st.code(python_all_tables, language="python")
-        st.markdown("Small preview query:")
+        st.markdown(
+            "Copy one script below into your own `.py` file. Only `.env` needs your key. "
+            "When the browser opens, sign in with the same account you use on this dashboard."
+        )
+        st.markdown("`.env`:")
+        st.code(env_example, language="text")
+        st.markdown("Small preview (good first test):")
         st.code(python_query, language="python")
+        st.markdown("Refresh / download all tables:")
+        st.code(python_all_tables, language="python")
 
     with r_tab:
-        st.markdown("All-table version-aware refresh:")
-        st.code(r_all_tables, language="r")
-        st.markdown("Small preview query:")
+        st.markdown(
+            "Copy one script below into your own `.R` file. Only `.env` needs your key. "
+            "Packages: `httr2`, `httpuv`, `jsonlite`, `openssl`. "
+            "When the browser opens, sign in with the same account you use on this dashboard."
+        )
+        st.markdown("`.env`:")
+        st.code(env_example, language="text")
+        st.markdown("Small preview (good first test):")
         st.code(r_query, language="r")
+        st.markdown("Refresh / download all tables:")
+        st.code(r_all_tables, language="r")
 
     with endpoints_tab:
         st.dataframe(endpoints, use_container_width=True, hide_index=True)
 
-    with security_tab:
+    with tips_tab:
         st.markdown(
-            """
-            - Store your key in a `.env` file next to your Python/R script as `GEMS_API_KEY="gems_live_..."`.
-            - The Python/R examples load `.env` automatically.
-            - Do not commit API keys to GitHub, shared notebooks, manuscripts, or email.
-            - Revoke a key immediately if it is exposed.
-            - Generate separate keys for separate computers or workflows.
+            f"""
+            - Sign in to Auth0 with the **same account** you use on this dashboard. The API checks that it matches the key owner.
+            - `.env` only needs `GEMS_API_KEY`. The API URL and Auth0 settings are in the copied script.
+            - Do not commit your key or share it by email.
+            - Revoke a key on this page if a computer is lost or a key leaks.
+            - Swagger, Python, and R examples all send your API key and Auth0 login.
+              The API checks that the Auth0 email matches the email that owns the key.
             """
         )
-        st.code('GEMS_API_KEY="gems_live_..."', language="text")
