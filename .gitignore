@@ -202,6 +202,7 @@ gems_data/
 
 # Local Azure zip deploy artifact
 gems-dashboard.zip
+gems-api.zip
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
