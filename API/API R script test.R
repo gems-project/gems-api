@@ -161,7 +161,7 @@ gems_headers <- function() {
   c("X-API-Key" = API_KEY, Authorization = paste("Bearer", access_token))
 }
 
-data_dir <- "gems_data"
+data_dir <- "gems_data_v1"
 dir.create(data_dir, showWarnings = FALSE)
 headers <- gems_headers()
 
@@ -208,9 +208,11 @@ for (table in tables) {
             " remote=", remote_version, ". Downloading...")
   }
 
+  # Same idea as Python requests timeout=600: wait while bytes keep arriving;
+  # abort only if the transfer is idle for 600s (not a 10-minute total cap).
   resp <- request(paste0(BASE_URL, "/export/", table, ".csv")) |>
     req_headers(!!!as.list(headers)) |>
-    req_timeout(600) |>
+    req_options(timeout = 0, connecttimeout = 60, low_speed_limit = 1, low_speed_time = 600) |>
     req_perform()
   csv_path <- file.path(data_dir, paste0(table, ".csv"))
   writeBin(resp_body_raw(resp), csv_path)

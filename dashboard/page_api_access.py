@@ -588,7 +588,7 @@ r_all_tables = (
 
           resp <- request(paste0(BASE_URL, "/export/", table, ".csv")) |>
             req_headers(!!!as.list(headers)) |>
-            req_timeout(600) |>
+            req_options(timeout = 0, connecttimeout = 60, low_speed_limit = 1, low_speed_time = 600) |>
             req_perform()
           csv_path <- file.path(data_dir, paste0(table, ".csv"))
           writeBin(resp_body_raw(resp), csv_path)

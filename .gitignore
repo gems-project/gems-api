@@ -199,6 +199,17 @@ Delta sharing/shared_table_exports/
 
 # Local GEMS API downloads (can exceed GitHub's 100 MB file limit)
 gems_data/
+gems_data_v1/
+
+# Option 2 instance KG dumps (rebuild with docs/ontology/build_gems_kg.py)
+docs/ontology/kg/gems_instances.nt
+docs/ontology/kg/gems_animal_day.csv
+
+# One-study gold extract for sharing (animal IDs)
+docs/ontology/share_saba/gold_study009/
+
+# Local ontology files
+Ontology/
 
 # Local Azure zip deploy artifact
 gems-dashboard.zip
