@@ -66,8 +66,11 @@ _INSTITUTION_PINS: dict[str, dict] = {
         "country": "Belgium",
     },
     "ilvo": {"lat": 50.9840, "lon": 3.7820, "country": "Belgium"},
-    # SLU main campus, Ultuna (Uppsala).
-    "swedishuniversityofagriculturalsciences": {"lat": 59.8160, "lon": 17.6560, "country": "Sweden"},
+    # SLU Röbäcksdalen research farm, Umeå (ExperimentalLocation in gold).
+    "swedishuniversityofagriculturalsciences": {"lat": 63.8090, "lon": 20.2380, "country": "Sweden"},
+    # AAFC Lethbridge Research and Development Centre (where most AAFC studies ran).
+    "agricultureandagrifoodcanada": {"lat": 49.6990, "lon": -112.7650, "country": "Canada"},
+    "agricultureagrifoodcanada": {"lat": 49.6990, "lon": -112.7650, "country": "Canada"},
     # CSIC headquarters, Madrid.
     "spanishresearchcouncil": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
     "csic": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
@@ -236,6 +239,18 @@ def countries_match(want: str | None, got: str | None) -> bool:
         return True
     aliases = _COUNTRY_ALIASES.get(want_l)
     return bool(aliases and got_l in aliases)
+
+
+def english_country(name: str | None) -> str | None:
+    """English country name (e.g. 'Italia' -> 'Italy') for display and Plotly maps."""
+    if not name:
+        return None
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    low = plain.strip().lower()
+    for english, aliases in _COUNTRY_ALIASES.items():
+        if low == english or low in aliases:
+            return " ".join(w.capitalize() for w in english.split())
+    return name.strip()
 
 
 def geocode_query(affiliation: str) -> str:

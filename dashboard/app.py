@@ -14,10 +14,11 @@ Other HTML blocks use ``textwrap.dedent`` before Markdown where needed.
 
 from __future__ import annotations
 
+import html
 import json
+import math
 import os
 import sys
-import textwrap
 from datetime import date, datetime
 from pathlib import Path
 
@@ -42,14 +43,14 @@ from gems_logo_data import (  # noqa: E402
     GLOBAL_METHANE_HUB_PNG_B64,
 )
 from gems_geography import (  # noqa: E402
-    dedupe_institution_labels,
+    english_country,
     fallback_coordinates as _geo_fallback_coordinates,
     geocode_query as _geo_geocode_query,
     humanize_affiliation,
     institution_key,
     pinned_coordinates as _geo_pinned_coordinates,
 )
-from gems_ui import apply_theme, render_html, sidebar_user  # noqa: E402
+from gems_ui import apply_theme, sidebar_user  # noqa: E402
 
 st.set_page_config(
     page_title="GEMS Dashboard",
@@ -59,10 +60,6 @@ st.set_page_config(
 )
 
 apply_theme()
-
-
-def _md_html(body: str) -> str:
-    return textwrap.dedent(body).strip()
 
 
 def _resolve_asset_path(filename: str) -> Path | None:
@@ -95,17 +92,22 @@ def _clean_b64(s: str) -> str:
 
 _HOME_CATALOG = os.environ.get("GEMS_CATALOG", "gems_catalog")
 _HOME_SCHEMA = os.environ.get("GEMS_SCHEMA", "gold_v1")
-_BRONZE_SCHEMA = os.environ.get("GEMS_BRONZE_SCHEMA", "gems_schema")
 _RESOURCES_DIR = _DASHBOARD_ROOT / "resources"
 _SITE_GEOCACHE_PATH = _RESOURCES_DIR / "site_geocache.json"
-_CONSORTIUM_MEMBERS = [
-    ("Cornell University", "cornell_university.png"),
-    ("University of California", "university_of_california.png"),
-    ("University of Guelph", "university_of_guelph.png"),
-    ("ETH Zurich", "eth_zurich.png"),
-    ("University of New England", "university_of_new_england.png"),
-    ("Agriculture and Agri-Food Canada", "agriculture_and_agri_food_canada.png"),
+_CONTACTS = [
+    ("Puchun Niu", "pn287@cornell.edu"),
+    ("Hanlu Zhang", "hz785@cornell.edu"),
+    ("Miel Hostens", "miel.hostens@cornell.edu"),
 ]
+# (snapshot key, gold table) for the "What's in the warehouse" list.
+_WAREHOUSE_TABLES = [
+    ("visits", "goldgreenfeedrawvisitationdata"),
+    ("intake", "goldintakeperday"),
+    ("milk", "goldmilk"),
+    ("bodyweight", "goldbodyweight"),
+    ("chamber", "goldrespirationchambermeasurement"),
+]
+_TYPE_COLORS = {"Dairy": "#1E88E5", "Beef": "#F4511E", "Mixed": "#8E24AA"}
 _DEFAULT_SITE_ROWS = [
     {"location": "Cornell University, Ithaca, United States", "study_count": 0},
     {"location": "University of California, Davis, United States", "study_count": 0},
@@ -115,12 +117,18 @@ _DEFAULT_SITE_ROWS = [
     {"location": "Agriculture and Agri-Food Canada, Ottawa, Canada", "study_count": 0},
 ]
 _SITE_GEOCACHE: dict = {}
-# Esri's light-gray canvas needs no API key (CARTO basemaps now require one).
-_BASEMAP_TILES = (
-    "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/"
-    "World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-)
-_BASEMAP_ATTR = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
+
+
+def _production_label(value) -> str | None:
+    """Normalise free-text ProductionType ('dairy', 'Daity', ...) to Dairy/Beef."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("dai"):
+        return "Dairy"
+    if text.startswith("beef"):
+        return "Beef"
+    return text.title()
 
 
 def _home_connect():
@@ -241,20 +249,55 @@ class _HomeQueries:
             for key in sorted(labels, key=lambda k: labels[k].lower())
         ]
 
-    def bronze_partner_institutions(self) -> list[str]:
-        """Unique partner affiliations from bronzecontributor (ingested, not QC'd)."""
-        table = "bronzecontributor"
-        affiliation_col = self.resolve(table, "Affiliation", "affiliation", schema=_BRONZE_SCHEMA)
-        if not affiliation_col:
-            return []
-        aff = _col(affiliation_col)
-        rows = self.rows(
-            f"SELECT DISTINCT {aff} FROM {_fq(table, _BRONZE_SCHEMA)} "
-            f"WHERE {aff} IS NOT NULL AND TRIM(CAST({aff} AS STRING)) <> ''"
-        )
-        return dedupe_institution_labels(
-            [humanize_affiliation(str(row[0]).strip()) for row in rows]
-        )
+    def study_details(self) -> dict[str, dict]:
+        """Per gold study: production type, animal count, years, GreenFeed visits."""
+        details: dict[str, dict] = {}
+
+        def entry(study_id) -> dict:
+            return details.setdefault(
+                str(study_id).strip(),
+                {"type": None, "animals": 0, "start": None, "end": None, "visits": 0},
+            )
+
+        type_votes: dict[str, dict[str, int]] = {}
+        for sid, prod, n in self.rows(
+            "SELECT studyId, ProductionType, COUNT(*) "
+            f"FROM {_fq('goldanimalcharacteristics')} GROUP BY studyId, ProductionType"
+        ):
+            label = _production_label(prod)
+            if label:
+                votes = type_votes.setdefault(str(sid).strip(), {})
+                votes[label] = votes.get(label, 0) + int(n)
+        for sid, animals in self.rows(
+            f"SELECT studyId, COUNT(DISTINCT AnimalIdentifier) "
+            f"FROM {_fq('goldanimalcharacteristics')} GROUP BY studyId"
+        ):
+            entry(sid)["animals"] = int(animals or 0)
+        for sid, votes in type_votes.items():
+            entry(sid)["type"] = max(votes, key=votes.get)
+        for sid, start, end in self.rows(
+            "SELECT studyId, YEAR(MIN(Date)), YEAR(MAX(Date)) "
+            f"FROM {_fq('goldexperimentaldesign')} "
+            "WHERE Date > DATE '1990-01-01' AND Date <= current_date() GROUP BY studyId"
+        ):
+            item = entry(sid)
+            item["start"], item["end"] = start, end
+        for sid, visits in self.rows(
+            f"SELECT studyId, COUNT(*) FROM {_fq('goldgreenfeedrawvisitationdata')} "
+            "GROUP BY studyId"
+        ):
+            entry(sid)["visits"] = int(visits or 0)
+        return details
+
+    def warehouse_counts(self) -> dict[str, int]:
+        """Row counts for the headline record types shown on the home page."""
+        counts: dict[str, int] = {}
+        for key, table in _WAREHOUSE_TABLES:
+            try:
+                counts[key] = int(self.rows(f"SELECT COUNT(*) FROM {_fq(table)}")[0][0])
+            except Exception:
+                continue
+        return counts
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -268,7 +311,8 @@ def _home_snapshot_live() -> dict:
         "animals": None,
         "date_range": None,
         "sites": [],
-        "partners": [],
+        "study_details": {},
+        "warehouse": {},
     }
     with _home_connect() as conn, conn.cursor() as cur:
         q = _HomeQueries(cur)
@@ -276,7 +320,8 @@ def _home_snapshot_live() -> dict:
             ("counts", q.study_animal_counts),
             ("date_range", q.date_range),
             ("sites", q.site_rows),
-            ("partners", q.bronze_partner_institutions),
+            ("study_details", q.study_details),
+            ("warehouse", q.warehouse_counts),
         )
         for name, fetch in steps:
             try:
@@ -430,6 +475,7 @@ def _geocode_sites(sites: list[dict]) -> list[dict]:
         if coords:
             located.append(
                 {
+                    "cache_key": cache_key,
                     "location": label,
                     "study_count": site.get("study_count", 0),
                     "study_ids": site.get("study_ids", []),
@@ -439,225 +485,417 @@ def _geocode_sites(sites: list[dict]) -> list[dict]:
     return located
 
 
-def _render_stat_cards(snapshot: dict) -> None:
-    partners = snapshot.get("partners") or []
+_HOME_CSS = """
+<style>
+  .gems-kpis {
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.75rem; margin: 0.4rem 0 0.2rem 0;
+  }
+  @media (max-width: 1100px) { .gems-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 560px)  { .gems-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .gems-kpi {
+    background: #ffffff; border: 1px solid #E1E7E3; border-radius: 12px;
+    padding: 0.85rem 0.9rem; border-top: 4px solid var(--accent, #2E7D32);
+  }
+  .gems-kpi .v { font-size: 1.65rem; font-weight: 750; color: #1A2B20; line-height: 1.15; }
+  .gems-kpi .l { font-size: 0.8rem; color: #5B6B61; margin-top: 0.15rem; }
+
+  .gems-inside { list-style: none; padding: 0; margin: 0.2rem 0 0 0; }
+  .gems-inside li {
+    display: flex; align-items: baseline; gap: 0.6rem;
+    padding: 0.55rem 0; border-bottom: 1px solid #EEF2EF;
+  }
+  .gems-inside li:last-child { border-bottom: none; }
+  .gems-inside .n { font-weight: 750; color: #1B5E20; font-size: 1.15rem; min-width: 6.2rem; }
+  .gems-inside .t { color: #37473C; font-size: 0.92rem; }
+
+  .gems-site-head { font-size: 1.05rem; font-weight: 700; color: #1A2B20; margin: 0.2rem 0 0.1rem 0; }
+  .gems-site-stats { color: #37473C; font-size: 0.9rem; margin: 0.55rem 0 0.6rem 0; line-height: 1.5; }
+  .gems-site-stats b { color: #1A2B20; }
+  .gems-pill {
+    display: inline-block; border-radius: 999px; padding: 0.12rem 0.6rem;
+    font-size: 0.78rem; font-weight: 650; color: #fff; margin-right: 0.3rem;
+  }
+</style>
+"""
+
+
+def _countries_with_studies(located: list[dict]) -> dict[str, set[str]]:
+    by_country: dict[str, set[str]] = {}
+    for site in located:
+        country = english_country(site.get("country"))
+        if country:
+            by_country.setdefault(country, set()).update(site.get("study_ids", []))
+    return by_country
+
+
+def _site_type_counts(site: dict, details: dict) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for sid in site.get("study_ids", []):
+        label = (details.get(sid) or {}).get("type") or "Other"
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _site_type(counts: dict[str, int]) -> str:
+    known = {k: v for k, v in counts.items() if k in ("Dairy", "Beef")}
+    if len(known) > 1:
+        return "Mixed"
+    return next(iter(known), "Mixed")
+
+
+def _year_span(values: list) -> str:
+    years = sorted({int(v) for v in values if v})
+    if not years:
+        return "-"
+    return str(years[0]) if years[0] == years[-1] else f"{years[0]}–{years[-1]}"
+
+
+def _render_hero() -> None:
+    gems_b64 = _clean_b64(GEMS_LOGO_PNG_B64)
+    gmh_b64 = _clean_b64(GLOBAL_METHANE_HUB_PNG_B64)
+    chip = (
+        "display:inline-block;background:rgba(255,255,255,0.18);padding:0.25rem 0.75rem;"
+        "border-radius:999px;margin:0.6rem 0.4rem 0 0;font-size:0.8rem;"
+    )
+    logo = "height:46px;width:auto;object-fit:contain;filter:brightness(0) invert(1);opacity:0.92;"
+    st.markdown(
+        f"""
+<div style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:linear-gradient(120deg,#0F3D24 0%,#1B5E20 45%,#2E7D32 80%,#43A047 100%);
+  color:#fff;border-radius:16px;padding:1.5rem 1.75rem;margin:0 0 1rem 0;
+  box-shadow:0 10px 24px -12px rgba(31,107,66,0.55);
+  display:flex;flex-wrap:wrap;gap:1.25rem;align-items:center;justify-content:space-between;">
+  <div style="flex:1 1 420px;min-width:0;">
+    <h1 style="margin:0 0 0.35rem 0;font-size:clamp(1.4rem,2.6vw,2.15rem);font-weight:750;
+      line-height:1.15;color:#fff;">GreenFeed Emissions Measurement System</h1>
+    <p style="margin:0;font-size:1.02rem;line-height:1.5;opacity:0.95;color:#fff;max-width:46rem;">
+      Research herds around the world pooling GreenFeed methane measurements into one
+      standardized, FAIR data warehouse &mdash; so every partner's numbers can be compared.
+    </p>
+    <span style="{chip}">Global Methane Hub</span>
+    <span style="{chip}">Cornell University &middot; lead coordinator</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:1.1rem;">
+    <img src="data:image/png;base64,{gems_b64}" alt="GEMS" style="{logo}" />
+    <div style="width:1px;height:34px;background:rgba(255,255,255,0.3);"></div>
+    <img src="data:image/png;base64,{gmh_b64}" alt="Global Methane Hub" style="{logo}" />
+  </div>
+</div>
+""".strip(),
+        unsafe_allow_html=True,
+    )
+
+
+def _map_figure(located: list[dict], details: dict, by_country: dict[str, set[str]]):
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    if by_country:
+        names = sorted(by_country)
+        fig.add_trace(
+            go.Choropleth(
+                locations=names,
+                z=[len(by_country[c]) for c in names],
+                locationmode="country names",
+                colorscale=[[0, "#C5E8C8"], [1, "#4CAF50"]],
+                showscale=False,
+                marker_line_color="#FFFFFF",
+                marker_line_width=0.6,
+                hovertemplate="<b>%{location}</b><br>%{z} gold studies<extra></extra>",
+            )
+        )
+    groups: dict[str, list[dict]] = {}
+    for site in located:
+        counts = _site_type_counts(site, details)
+        groups.setdefault(_site_type(counts), []).append({**site, "types": counts})
+    for type_name in ("Dairy", "Beef", "Mixed"):
+        sites = groups.get(type_name)
+        if not sites:
+            continue
+        fig.add_trace(
+            go.Scattergeo(
+                name=f"{type_name} studies" if type_name != "Mixed" else "Dairy and beef",
+                lon=[s["lon"] for s in sites],
+                lat=[s["lat"] for s in sites],
+                customdata=[s["cache_key"] for s in sites],
+                text=[
+                    f"<b>{s['location']}</b><br>{s['study_count']} gold "
+                    f"stud{'y' if s['study_count'] == 1 else 'ies'}"
+                    + "".join(f"<br>{k}: {v}" for k, v in sorted(s["types"].items()))
+                    + "<br><i>Click for details</i>"
+                    for s in sites
+                ],
+                hovertemplate="%{text}<extra></extra>",
+                mode="markers",
+                marker=dict(
+                    size=[12 + 7 * math.sqrt(s["study_count"]) for s in sites],
+                    color=_TYPE_COLORS[type_name],
+                    opacity=0.88,
+                    line=dict(color="#FFFFFF", width=1.6),
+                ),
+            )
+        )
+    fig.update_geos(
+        projection_type="natural earth",
+        showland=True,
+        landcolor="#F1EFE7",
+        showocean=True,
+        oceancolor="#D4E9F7",
+        showlakes=True,
+        lakecolor="#D4E9F7",
+        showcountries=True,
+        countrycolor="#FFFFFF",
+        showcoastlines=False,
+        showframe=False,
+        lataxis_range=[-50, 76],
+        lonaxis_range=[-150, 165],
+        bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_layout(
+        height=360,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(
+            orientation="h",
+            x=0.01,
+            y=0.03,
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor="#E1E7E3",
+            borderwidth=1,
+            font=dict(size=12),
+        ),
+        clickmode="event+select",
+        hoverlabel=dict(bgcolor="#ffffff", font_size=13),
+    )
+    return fig
+
+
+def _render_site_panel(located: list[dict], details: dict) -> None:
+    by_key = {site["cache_key"]: site for site in located}
+    options = sorted(by_key, key=lambda k: (-by_key[k]["study_count"], by_key[k]["location"]))
+    if st.session_state.get("home_site_pick") not in by_key:
+        st.session_state["home_site_pick"] = options[0]
+    key = st.selectbox(
+        "Site",
+        options,
+        key="home_site_pick",
+        format_func=lambda k: f"{by_key[k]['location']} ({by_key[k]['study_count']})",
+        label_visibility="collapsed",
+    )
+    site = by_key[key]
+    counts = _site_type_counts(site, details)
+    pills = "".join(
+        f'<span class="gems-pill" style="background:{_TYPE_COLORS.get(k, "#78909C")}">'
+        f"{v} {k.lower()}</span>"
+        for k, v in sorted(counts.items())
+    )
+    rows = [details.get(sid) or {} for sid in site.get("study_ids", [])]
+    animals = sum(r.get("animals", 0) for r in rows)
+    years = _year_span([r.get("start") for r in rows] + [r.get("end") for r in rows])
+    st.markdown(
+        f'<div class="gems-site-head">{html.escape(site["location"])}</div>'
+        f'<div class="gems-muted" style="margin-bottom:0.45rem;">'
+        f'{html.escape(english_country(site.get("country")) or "")} &middot; {years}</div>'
+        f"{pills}"
+        f'<div class="gems-site-stats"><b>{site["study_count"]:,}</b> studies &middot; '
+        f"<b>{animals:,}</b> animals</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_map_section(snapshot: dict) -> list[dict]:
     sites = snapshot.get("sites") or []
-    institutions = _count_label(len(partners) if partners else None)
-    studies = _count_label(snapshot.get("studies"))
-    animals = _count_label(snapshot.get("animals"))
-    date_range = _date_range_label(snapshot.get("date_range"))
+    details = snapshot.get("study_details") or {}
+    showing_defaults = not sites
+    located = _geocode_sites(sites or _DEFAULT_SITE_ROWS)
+    by_country = _countries_with_studies(located)
 
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    sc1.markdown(
-        f'<div class="gems-stat"><div class="v">{institutions}</div>'
-        f'<div class="l">Partner institutions</div></div>',
-        unsafe_allow_html=True,
-    )
-    if partners:
-        with sc1.popover("View partner institutions"):
-            st.markdown("**Unique affiliations** from `bronzecontributor` (`gems_schema`):")
-            st.caption(
-                "Bronze = raw contributor records as ingested from data-entry templates "
-                "(complete submissions, not yet quality-checked into gold)."
+    st.markdown("### Where the data comes from")
+    col_map, col_panel = st.columns([2.6, 1], gap="medium")
+    with col_map:
+        event = st.plotly_chart(
+            _map_figure(located, details, by_country),
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="points",
+            key="home_map",
+            config={"displayModeBar": False, "scrollZoom": False},
+        )
+        picked = next(
+            (p.get("customdata") for p in (event.selection.points if event else []) if p.get("customdata")),
+            None,
+        )
+        if isinstance(picked, list):
+            picked = picked[0] if picked else None
+        if picked and picked != st.session_state.get("home_map_last"):
+            st.session_state["home_map_last"] = picked
+            st.session_state["home_site_pick"] = picked
+    with col_panel:
+        if showing_defaults:
+            st.info("Live study data is unavailable right now; showing consortium members.")
+        else:
+            st.markdown(
+                '<div class="gems-muted">Click a circle on the map, or choose a site:</div>',
+                unsafe_allow_html=True,
             )
-            for name in partners:
-                st.markdown(f"- {name}")
+            _render_site_panel(located, details)
+    if not showing_defaults:
+        all_ids = {sid for site in sites for sid in site.get("study_ids", [])}
+        mapped = {sid for site in located for sid in site.get("study_ids", [])}
+        note = (
+            f"Circle size = number of gold studies. {len(mapped):,} studies from "
+            f"{len(located)} institutions in {len(by_country)} countries."
+        )
+        if len(mapped) < len(all_ids):
+            note += f" {len(all_ids) - len(mapped)} studies could not be placed on the map."
+        st.caption(note)
+    return located
+
+
+def _render_kpis(snapshot: dict, located: list[dict]) -> None:
+    warehouse = snapshot.get("warehouse") or {}
+    date_range = snapshot.get("date_range")
+    if date_range:
+        first, last = int(date_range[0][:4]), int(date_range[1][:4])
+        years, years_label = f"{last - first + 1} years", f"of data, {first}–{last}"
     else:
-        sc1.caption("Partner list loads from Databricks when available.")
-
-    sc2.markdown(
-        f'<div class="gems-stat"><div class="v">{studies}</div>'
-        f'<div class="l">Gold studies</div></div>',
+        years, years_label = "-", "Years of data"
+    tiles = [
+        (_count_label(snapshot.get("studies")), "Gold studies", "#2E7D32"),
+        (_count_label(snapshot.get("animals")), "Animals", "#00897B"),
+        (_count_label(warehouse.get("visits")), "GreenFeed visits", "#1E88E5"),
+        (_count_label(len(_countries_with_studies(located)) or None), "Countries", "#F4511E"),
+        (_count_label(len(snapshot.get("sites") or []) or None), "Institutions", "#8E24AA"),
+        (years, years_label, "#6D4C41"),
+    ]
+    st.markdown(
+        '<div class="gems-kpis">'
+        + "".join(
+            f'<div class="gems-kpi" style="--accent:{accent}"><div class="v">{value}</div>'
+            f'<div class="l">{label}</div></div>'
+            for value, label, accent in tiles
+        )
+        + "</div>",
         unsafe_allow_html=True,
     )
-    gold_inst = [site["label"] for site in sites if site.get("label")]
-    if gold_inst:
-        with sc2.popover("View gold study institutions"):
-            st.markdown("**Institutions in gold studies** from `goldcontributor` (`gold_v1`):")
-            st.caption(
-                "Gold = curated, quality-checked tables used for analysis and the map. "
-                f"{len(gold_inst)} institution(s) among {studies} gold studies."
-            )
-            for name in gold_inst:
-                st.markdown(f"- {name}")
 
-    for col, value, label in (
-        (sc3, animals, "Animals"),
-        (sc4, date_range, "Date range"),
-    ):
-        col.markdown(
-            f'<div class="gems-stat"><div class="v">{value}</div>'
-            f'<div class="l">{label}</div></div>',
+
+def _render_story(snapshot: dict) -> None:
+    import plotly.graph_objects as go
+
+    details = snapshot.get("study_details") or {}
+    warehouse = snapshot.get("warehouse") or {}
+    col_chart, col_inside = st.columns([1.7, 1], gap="large")
+    with col_chart:
+        st.markdown("### GEMS gold studies by start year")
+        st.markdown(
+            '<div class="gems-muted">Studies currently in the GEMS gold dataset, counted by '
+            "the year each experiment started.</div>",
+            unsafe_allow_html=True,
+        )
+        by_year: dict[str, dict[int, int]] = {}
+        for item in details.values():
+            if item.get("start"):
+                label = item.get("type") or "Other"
+                by_year.setdefault(label, {})
+                by_year[label][int(item["start"])] = by_year[label].get(int(item["start"]), 0) + 1
+        if by_year:
+            years = range(
+                min(min(v) for v in by_year.values()), max(max(v) for v in by_year.values()) + 1
+            )
+            fig = go.Figure()
+            for label in sorted(by_year, key=lambda k: (k not in _TYPE_COLORS, k)):
+                fig.add_trace(
+                    go.Bar(
+                        name=label,
+                        x=list(years),
+                        y=[by_year[label].get(y, 0) for y in years],
+                        marker_color=_TYPE_COLORS.get(label, "#90A4AE"),
+                        hovertemplate=f"%{{x}}: %{{y}} {label.lower()} studies<extra></extra>",
+                    )
+                )
+            fig.update_layout(
+                barmode="stack",
+                height=300,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                legend=dict(orientation="h", y=1.08, x=0),
+                xaxis=dict(dtick=1, showgrid=False),
+                yaxis=dict(title="Studies", gridcolor="#EEF2EF", rangemode="tozero"),
+                bargap=0.25,
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("Study dates load from Databricks when available.")
+    with col_inside:
+        st.markdown("### What's inside")
+        items = [
+            ("visits", "GreenFeed visits with CH₄, CO₂, O₂ and H₂"),
+            ("intake", "daily feed-intake records"),
+            ("milk", "milk yield and composition records"),
+            ("bodyweight", "body-weight records"),
+            ("chamber", "respiration-chamber readings"),
+        ]
+        rows = "".join(
+            f'<li><span class="n">{warehouse[key]:,}</span><span class="t">{text}</span></li>'
+            for key, text in items
+            if warehouse.get(key)
+        )
+        st.markdown(
+            f'<ul class="gems-inside">{rows}</ul>'
+            '<div class="gems-muted" style="margin-top:0.5rem;">Plus diets, feed '
+            "ingredients, digestibility and GreenFeed settings for every study.</div>",
             unsafe_allow_html=True,
         )
 
-    st.markdown(
-        """
-        <div class="gems-trust-row">
-          <span>Live | Data from Databricks</span>
-          <span>Secure | Auth0 sign-in + allowlist</span>
-        </div>
-        """,
+
+def _render_actions(authorized: bool) -> None:
+    st.markdown("### Work with the data")
+    if not authorized:
+        st.markdown(
+            '<div class="gems-muted" style="margin:-0.3rem 0 0.5rem 0;">Sign in and request '
+            "access to use these tools.</div>",
+            unsafe_allow_html=True,
+        )
+    actions = [
+        ("page_explore.py", "Explore", "🔎", "Browse tables, preview rows and draw quick charts."),
+        ("page_modeling.py", "Modeling", "📈", "Fit regression and mixed models, no code needed."),
+        ("page_chat.py", "Chat", "💬", "Ask questions in plain English; read-only queries."),
+        ("page_api_access.py", "API Access", "🔑", "Get a personal key to pull data into Python or R."),
+    ]
+    cols = st.columns(4, gap="medium")
+    for col, (page, label, icon, blurb) in zip(cols, actions):
+        with col, st.container(border=True):
+            st.page_link(page, label=f"**{label}**", icon=icon)
+            st.caption(blurb)
+
+
+def _render_sidebar_contacts() -> None:
+    people = "".join(
+        f'<div style="margin-bottom:0.55rem;"><div style="font-weight:650;color:#1A2B20;">'
+        f'{html.escape(name)}</div><a href="mailto:{email}" style="color:#1B5E20;'
+        f'font-size:0.88rem;">{email}</a></div>'
+        for name, email in _CONTACTS
+    )
+    st.sidebar.markdown(
+        f'<div style="font-weight:700;color:#1B5E20;margin:0.4rem 0 0.5rem 0;">Contact</div>{people}',
         unsafe_allow_html=True,
     )
-
-
-def _render_consortium_section() -> None:
-    st.markdown("#### Consortium Members")
-    logos_dir = _DASHBOARD_ROOT / "assets" / "logos"
-    logo_files = sorted(logos_dir.glob("*")) if logos_dir.exists() else []
-
-    if logo_files:
-        cols = st.columns(min(6, len(_CONSORTIUM_MEMBERS)))
-        for idx, (name, filename) in enumerate(_CONSORTIUM_MEMBERS):
-            logo_path = logos_dir / filename
-            with cols[idx % len(cols)]:
-                if logo_path.exists():
-                    st.image(str(logo_path), caption=name, use_container_width=True)
-                else:
-                    st.markdown(f'<div class="gems-member-card">{name}</div>', unsafe_allow_html=True)
-    else:
-        cards = "".join(
-            f'<div class="gems-member-card">{name}</div>' for name, _ in _CONSORTIUM_MEMBERS
-        )
-        st.markdown(f'<div class="gems-member-grid">{cards}</div>', unsafe_allow_html=True)
-
-
-def _render_site_map(snapshot: dict) -> None:
-    st.markdown("#### Contributing sites around the world")
-    sites = snapshot.get("sites") or []
-    showing_defaults = not sites
-    if showing_defaults:
-        sites = _DEFAULT_SITE_ROWS
-
-    located = _geocode_sites(sites)
-
-    import folium
-    from folium.plugins import MarkerCluster
-    from streamlit_folium import st_folium
-
-    center_lat = sum(site["lat"] for site in located) / len(located) if located else 20
-    center_lon = sum(site["lon"] for site in located) / len(located) if located else 0
-    fmap = folium.Map(location=[center_lat, center_lon], zoom_start=2, tiles=None)
-    folium.TileLayer(
-        tiles=_BASEMAP_TILES, attr=_BASEMAP_ATTR, name="Light gray", max_zoom=16
-    ).add_to(fmap)
-    cluster = MarkerCluster().add_to(fmap)
-    for site in located:
-        n = site["study_count"]
-        folium.Marker(
-            location=[site["lat"], site["lon"]],
-            popup=folium.Popup(
-                f"<strong>{site['location']}</strong><br>{n} gold stud{'y' if n == 1 else 'ies'}",
-                max_width=280,
-            ),
-            tooltip=site["location"],
-            icon=folium.Icon(color="darkgreen", icon="leaf", prefix="fa"),
-        ).add_to(cluster)
-    # returned_objects=[] stops pan/zoom from triggering a full Streamlit rerun.
-    st_folium(fmap, height=390, use_container_width=True, returned_objects=[])
-
-    if showing_defaults:
-        st.caption("Live affiliation data is unavailable; showing consortium members.")
-        return
-    all_ids = {sid for site in sites for sid in site.get("study_ids", [])}
-    mapped_ids = {sid for site in located for sid in site.get("study_ids", [])}
-    caption = (
-        f"Map shows {len(mapped_ids):,} gold studies across {len(located)} institutions."
-        if len(mapped_ids) == len(all_ids)
-        else (
-            f"Map shows {len(mapped_ids):,} of {len(all_ids):,} gold studies "
-            f"({len(located)} of {len(sites)} institutions located)."
-        )
-    )
-    if sum(site.get("study_count", 0) for site in sites) > len(all_ids):
-        caption += " Some studies list more than one institution."
-    st.caption(caption)
 
 
 _SITE_GEOCACHE = _read_site_geocache()
 
 
-def _hero_html() -> str:
-    """Hero HTML with embedded logos for st.markdown(unsafe_allow_html=True).
-
-    ``st.markdown`` renders ``data:`` image URLs in the top-level document
-    (not a sandboxed iframe), so CSP does not block the embedded logos.
-    """
-    gems_b64 = _clean_b64(GEMS_LOGO_PNG_B64)
-    gmh_b64 = _clean_b64(GLOBAL_METHANE_HUB_PNG_B64)
-
-    chips = (
-        '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
-        "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
-        'font-size:0.8rem;">Global Methane Hub</span>'
-        '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
-        "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
-        'font-size:0.8rem;">Cornell University | lead coordinator</span>'
-        '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
-        "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
-        'font-size:0.8rem;">50+ partner institutions</span>'
-        '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
-        "padding:0.25rem 0.75rem;border-radius:999px;margin:0.35rem 0.4rem 0 0;"
-        'font-size:0.8rem;">Real-time emissions data</span>'
-    )
-
-    logo_img_css = (
-        "height:52px;width:auto;object-fit:contain;display:block;"
-        "filter:brightness(0) invert(1);opacity:0.92;"
-    )
-
-    return f"""
-<div style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-  background:linear-gradient(135deg,#15502c 0%,#1f6b42 55%,#2a8254 100%);
-  color:#fff;border-radius:16px;padding:1.75rem 1.75rem 1.6rem;
-  box-shadow:0 10px 24px -12px rgba(31,107,66,0.55);margin:0 0 1.25rem 0;">
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;align-items:start;">
-    <div>
-      <h1 style="margin:0 0 0.45rem 0;font-size:clamp(1.35rem,2.5vw,2.05rem);
-        font-weight:700;line-height:1.2;color:#fff;">
-        GreenFeed Emissions Measurement System
-      </h1>
-      <p style="margin:0 0 0.75rem 0;font-size:1.02rem;line-height:1.55;opacity:0.96;color:#fff;">
-        A global collaboration using the GreenFeed system to track methane
-        and other gas emissions from ruminants, building a standardized,
-        FAIR data warehouse for climate-smart livestock research.
-      </p>
-      <div>{chips}</div>
-    </div>
-    <div style="display:flex;flex-direction:column;justify-content:center;height:100%;
-      padding-right:0.25rem;">
-      <div style="display:flex;align-items:center;justify-content:flex-end;
-        gap:1.25rem;margin-bottom:1rem;">
-        <img src="data:image/png;base64,{gems_b64}" alt="GEMS" style="{logo_img_css}" />
-        <div style="width:1px;height:36px;background:rgba(255,255,255,0.25);"></div>
-        <img src="data:image/png;base64,{gmh_b64}" alt="Global Methane Hub" style="{logo_img_css}" />
-      </div>
-      <div style="background:rgba(255,255,255,0.13);border:1px solid rgba(255,255,255,0.25);
-        border-radius:12px;padding:1rem 1.1rem;">
-        <div style="font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;
-          opacity:0.9;margin-bottom:0.4rem;font-weight:600;color:#fff;">
-          Our mission
-        </div>
-        <p style="margin:0;font-size:0.94rem;line-height:1.55;color:#fff;">
-          Develop science-based, standardized operating procedures for both
-          utilizing and interpreting GreenFeed data under different management
-          practices - so every partner can produce comparable, defensible
-          emissions measurements.
-        </p>
-      </div>
-    </div>
-  </div>
-</div>
-""".strip()
-
-
 def _render_home() -> None:
     user_info = get_current_user_info()
+    authorized = False
     if is_signed_in(user_info):
         sidebar_user(user_info.email)
         st.sidebar.markdown(sign_out_button_html(), unsafe_allow_html=True)
-        if is_authorized(user_info.email):
+        authorized = is_authorized(user_info.email)
+        if authorized:
             st.sidebar.caption(
                 "Use the links above to explore data, fit models, chat, and manage API access."
             )
@@ -676,144 +914,20 @@ def _render_home() -> None:
             "approval and a verified email."
         )
         st.sidebar.markdown(sign_in_button_html("Sign in"), unsafe_allow_html=True)
-        st.sidebar.markdown("---")
+    st.sidebar.markdown("---")
+    _render_sidebar_contacts()
 
-    st.markdown(_hero_html(), unsafe_allow_html=True)
-
-    _render_consortium_section()
-    st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
+    st.markdown(_HOME_CSS, unsafe_allow_html=True)
+    _render_hero()
     with st.spinner("Loading live figures from Databricks..."):
         snapshot = _home_snapshot()
-    _render_stat_cards(snapshot)
+    located = _render_map_section(snapshot)
+    _render_kpis(snapshot, located)
     st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
-
-    col_map, col_mission = st.columns([1.55, 1], gap="large")
-    with col_map:
-        _render_site_map(snapshot)
-
-    with col_mission:
-        st.markdown("#### Why GEMS?")
-        render_html(
-            _md_html(
-                """
-                <div class="gems-pillars">
-                  <div class="gems-pillar">
-                    <div class="p-head">
-                      <span class="p-dot">01</span>
-                      <h5>Global collaboration</h5>
-                    </div>
-                    <p>Over 50 institutions across every continent quantifying ruminant
-                    methane emissions at scale.</p>
-                  </div>
-                  <div class="gems-pillar">
-                    <div class="p-head">
-                      <span class="p-dot">02</span>
-                      <h5>Real-time tracking</h5>
-                    </div>
-                    <p>Continuous measurements from GreenFeed units, streamed into a shared
-                    warehouse within hours.</p>
-                  </div>
-                  <div class="gems-pillar">
-                    <div class="p-head">
-                      <span class="p-dot">03</span>
-                      <h5>FAIR, standardized data</h5>
-                    </div>
-                    <p>Findable, Accessible, Interoperable, Reusable &mdash; common schemas
-                    and shared SOPs across every site.</p>
-                  </div>
-                  <div class="gems-pillar">
-                    <div class="p-head">
-                      <span class="p-dot">04</span>
-                      <h5>Shared infrastructure</h5>
-                    </div>
-                    <p>One pipeline, one set of quality checks, one analytical toolkit &mdash;
-                    every partner benefits from every improvement.</p>
-                  </div>
-                </div>
-                <div class="gems-muted" style="margin-top:0.9rem;">
-                Contact: <a href="mailto:gems@cornell.edu">gems@cornell.edu</a>
-                </div>
-                """
-            )
-        )
-
+    _render_story(snapshot)
     st.markdown('<div class="gems-divider"></div>', unsafe_allow_html=True)
-    st.markdown("#### What you can do here")
+    _render_actions(authorized)
 
-    c1, c2 = st.columns(2, gap="medium")
-    c3, c4 = st.columns(2, gap="medium")
-
-    with c1:
-        st.markdown(
-            _md_html(
-                """
-                <div class="gems-card">
-                  <div class="gems-icon">🔎</div>
-                  <h4>Explore &amp; Visualize</h4>
-                  <p>Browse any table, inspect column types, preview rows, and render quick
-                  Plotly charts. Ask the AI assistant to interpret what you see — it only
-                  receives summary statistics, never raw data.</p>
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with c2:
-        st.markdown(
-            _md_html(
-                """
-                <div class="gems-card">
-                  <div class="gems-icon">🔑</div>
-                  <h4>API Access</h4>
-                  <p>Generate personal API keys, query tables from Python or R, and use
-                  version-aware refresh scripts that overwrite local files only when gold
-                  table versions change.</p>
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with c3:
-        st.markdown(
-            _md_html(
-                """
-                <div class="gems-card">
-                  <div class="gems-icon">📈</div>
-                  <h4>Modeling</h4>
-                  <p>Fit linear regression or linear mixed models across one or several joined
-                  tables — multiple predictors, multiple random slopes, and AI-written
-                  interpretation of R², coefficients, AIC/BIC, and more.</p>
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with c4:
-        st.markdown(
-            _md_html(
-                """
-                <div class="gems-card">
-                  <div class="gems-icon">💬</div>
-                  <h4>Chat with your data</h4>
-                  <p>Ask questions in plain English. The assistant lists tables, reads schemas,
-                  writes SELECT queries, and summarizes results — every query is validated as
-                  read-only before it touches Databricks.</p>
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        '<div class="gems-footer">Home is public. Sign in with Auth0 to request or use '
-        "data pages; administrator approval and a verified email are required for "
-        "Explore, Modeling, Chat, and API Access. Use Sign out if you are signed in "
-        "with the wrong account.</div>",
-        unsafe_allow_html=True,
-    )
 
 pg = st.navigation(
     [
