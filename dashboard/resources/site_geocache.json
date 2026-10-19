@@ -76,7 +76,7 @@
     "lat": 45.0368414,
     "lon": 9.727151
   },
-  "WageningenLivestockResearch": {
+  "Wageningen Livestock Research": {
     "country": "Netherlands",
     "label": "Wageningen Livestock Research",
     "lat": 51.983631,
@@ -88,7 +88,7 @@
     "lat": 51.985445,
     "lon": 5.663212
   },
-  "Wageningen Livestock Research": {
+  "WageningenLivestockResearch": {
     "country": "Netherlands",
     "label": "Wageningen Livestock Research",
     "lat": 51.983631,
@@ -99,6 +99,26 @@
     "label": "Wageningen University and Research",
     "lat": 51.985445,
     "lon": 5.663212
+  },
+  "agricultureandagrifoodcanada": {
+    "country": "Canada",
+    "lat": 45.3649876,
+    "lon": -75.7353526
+  },
+  "researchinstituteforfarmanimalbiologyfbn": {
+    "country": "Germany",
+    "lat": 53.85,
+    "lon": 12.23
+  },
+  "universitacattolicadelsacrocuore": {
+    "country": "Italia",
+    "lat": 45.0368414,
+    "lon": 9.727151
+  },
+  "universityofnewengland": {
+    "country": "Australia",
+    "lat": -30.4901137,
+    "lon": 151.6393281
   },
   "wageningenlivestockresearch": {
     "country": "Netherlands",

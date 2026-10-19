@@ -54,6 +54,29 @@ _KNOWN_INSTITUTION_QUERIES: dict[str, str] = {
     "wageningenlivestockresearch": "De Elst 1, 6708 WD Wageningen, Netherlands",
 }
 
+# institution_key -> fixed coordinates, used before any Nominatim lookup.
+# Institutions with several sites are pinned at their main/headquarters campus.
+_INSTITUTION_PINS: dict[str, dict] = {
+    "wageningenlivestockresearch": {"lat": 51.983631, "lon": 5.6589866, "country": "Netherlands"},
+    "wageningenuniversityandresearch": {"lat": 51.985445, "lon": 5.663212, "country": "Netherlands"},
+    # ILVO Animal Sciences Unit, Melle.
+    "flandersresearchinstituteforagriculturefisheriesandfood": {
+        "lat": 50.9840,
+        "lon": 3.7820,
+        "country": "Belgium",
+    },
+    "ilvo": {"lat": 50.9840, "lon": 3.7820, "country": "Belgium"},
+    # SLU main campus, Ultuna (Uppsala).
+    "swedishuniversityofagriculturalsciences": {"lat": 59.8160, "lon": 17.6560, "country": "Sweden"},
+    # CSIC headquarters, Madrid.
+    "spanishresearchcouncil": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
+    "csic": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
+    # USP main campus, São Paulo.
+    "universityofsaopaulo": {"lat": -23.5613, "lon": -46.7307, "country": "Brazil"},
+    "rumin8westperthaustralia": {"lat": -31.9475, "lon": 115.8420, "country": "Australia"},
+    "rumin8": {"lat": -31.9475, "lon": 115.8420, "country": "Australia"},
+}
+
 # Nominatim local country names that should match English preferred_country values.
 _COUNTRY_ALIASES: dict[str, set[str]] = {
     "netherlands": {"netherlands", "nederland", "the netherlands"},
@@ -229,14 +252,19 @@ def geocode_query(affiliation: str) -> str:
     return text
 
 
+def pinned_coordinates(affiliation: str) -> dict | None:
+    """Hard-coded coordinates for institutions Nominatim cannot place reliably."""
+    key = institution_key(humanize_affiliation(affiliation))
+    coords = _INSTITUTION_PINS.get(key)
+    return dict(coords) if coords else None
+
+
 def fallback_coordinates(affiliation: str) -> dict | None:
     """Keyword fallbacks with word boundaries."""
+    pinned = pinned_coordinates(affiliation)
+    if pinned:
+        return pinned
     key = institution_key(humanize_affiliation(affiliation))
-    # Hard pins for institutions whose Nominatim names are unreliable.
-    if key == "wageningenlivestockresearch":
-        return {"lat": 51.983631, "lon": 5.6589866, "country": "Netherlands"}
-    if key == "wageningenuniversityandresearch":
-        return {"lat": 51.985445, "lon": 5.663212, "country": "Netherlands"}
     if key in _KNOWN_INSTITUTION_QUERIES:
         query = _KNOWN_INSTITUTION_QUERIES[key].lower()
         for phrase, coords in _LOCATION_FALLBACKS:

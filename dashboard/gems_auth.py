@@ -81,15 +81,17 @@ def logout_url() -> str:
 
 def sign_in_button_html(label: str = "Sign in", redirect_path: str = "/") -> str:
     return (
-        f'<a href="{login_url(redirect_path)}" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
+        f'<a href="{login_url(redirect_path)}" target="_self" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
         "padding:0.38rem 0.85rem;background:#1f6b42;color:#fff;border-radius:8px;"
         f'text-decoration:none;font-weight:600;">{label}</a>'
     )
 
 
 def sign_out_button_html() -> str:
+    # target="_self": Streamlit opens links in a new tab by default, which would leave
+    # the signed-in session running in the original tab.
     return (
-        f'<a href="{logout_url()}" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
+        f'<a href="{logout_url()}" target="_self" style="display:inline-block;margin:0.25rem 0 0.75rem 0;'
         "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
         'text-decoration:none;font-weight:600;">Sign out</a>'
     )
@@ -262,7 +264,7 @@ def require_authorized_user() -> str:
         )
         st.markdown(
             sign_in_button_html("Sign in")
-            + '<a href="/" style="display:inline-block;margin:0.25rem 0 0.75rem 0.5rem;'
+            + '<a href="/" target="_self" style="display:inline-block;margin:0.25rem 0 0.75rem 0.5rem;'
             "padding:0.38rem 0.85rem;background:#6b7280;color:#fff;border-radius:8px;"
             'text-decoration:none;font-weight:600;">Back to home</a>',
             unsafe_allow_html=True,
@@ -285,10 +287,10 @@ def require_authorized_user() -> str:
         "the allowlist if you need data access."
     )
     st.markdown(
-        '<a href="/" style="display:inline-block;margin-top:0.5rem;margin-right:0.5rem;'
+        '<a href="/" target="_self" style="display:inline-block;margin-top:0.5rem;margin-right:0.5rem;'
         "padding:0.4rem 0.9rem;background:#1f6b42;color:#fff;border-radius:8px;"
         'text-decoration:none;font-weight:600;">Back to home</a>'
-        f'<a href="{logout_url()}" style="display:inline-block;margin-top:0.5rem;'
+        f'<a href="{logout_url()}" target="_self" style="display:inline-block;margin-top:0.5rem;'
         "padding:0.4rem 0.9rem;background:#6b7280;color:#fff;border-radius:8px;"
         'text-decoration:none;font-weight:600;">Sign out</a>',
         unsafe_allow_html=True,
