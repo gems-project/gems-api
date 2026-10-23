@@ -71,8 +71,10 @@ _INSTITUTION_PINS: dict[str, dict] = {
     # AAFC Lethbridge Research and Development Centre (where most AAFC studies ran).
     "agricultureandagrifoodcanada": {"lat": 49.6990, "lon": -112.7650, "country": "Canada"},
     "agricultureagrifoodcanada": {"lat": 49.6990, "lon": -112.7650, "country": "Canada"},
-    # CSIC headquarters, Madrid.
+    # CSIC headquarters, Calle de Serrano, Madrid.
     "spanishresearchcouncil": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
+    "spanishnationalresearchcouncil": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
+    "spanishnationalresearchcouncilcsic": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
     "csic": {"lat": 40.4406, "lon": -3.6890, "country": "Spain"},
     # USP main campus, São Paulo.
     "universityofsaopaulo": {"lat": -23.5613, "lon": -46.7307, "country": "Brazil"},
