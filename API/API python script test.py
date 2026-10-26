@@ -60,26 +60,8 @@ def gems_headers():
             self.end_headers()
             self.wfile.write(body)
 
-        class GemsCallbackServer(HTTPServer):
-            allow_reuse_address = True
-
-        def start_callback_server():
-            try:
-                return GemsCallbackServer(("127.0.0.1", port), Handler)
-            except OSError:
-                time.sleep(0.4)
-                try:
-                    return GemsCallbackServer(("127.0.0.1", port), Handler)
-                except OSError as exc:
-                    raise RuntimeError(
-                        f"Port {port} is already in use, so Auth0 login cannot start. "
-                        f"GEMS must use http://127.0.0.1:{port}/callback. "
-                        "Close other copies of this script, or stop the program using "
-                        f"that port, then run this file once."
-                    ) from exc
-
-        server = start_callback_server()
-        threading.Thread(target=server.handle_request, daemon=True).start()
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.handle_request, daemon=True).start()
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -93,6 +75,11 @@ def gems_headers():
         params["audience"] = audience
     url = f"https://{domain}/authorize?{urllib.parse.urlencode(params)}"
     print("Opening browser for Auth0 login…")
+    print(
+        "If Auth0 shows Callback URL mismatch, add this exact URL to "
+        "Auth0 → Applications → GEMS API Clients → Allowed Callback URLs:"
+    )
+    print(f"  {redirect_uri}")
     webbrowser.open(url)
     deadline = time.time() + 300
     while time.time() < deadline and not result and not error:
