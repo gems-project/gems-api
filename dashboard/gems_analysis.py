@@ -6,7 +6,8 @@ Two sources:
   tools_make_synthetic.py + the KG job's kg_local.py. In this mode the page never opens a Databricks
   connection, so local testing cannot pull real data.
 
-Also holds the pure helpers the page uses: animal-period means and robust outlier flags.
+Also holds the pure helpers the page uses: the cohort (facets, date range, required measurements),
+per-study overview, animal-period means and robust outlier flags.
 """
 
 from __future__ import annotations
@@ -21,6 +22,19 @@ import streamlit as st
 TABLES = ["kgStudy", "kgAnimal", "kgAnimalDay", "kgDiet", "kgDietNutrients", "kgDataDictionary"]
 ID_COLUMNS = {"studyId", "animal_id", "AnimalIdentifier", "Date", "treatment_id", "Treatment", "Period"}
 MAD_SCALE = 1.4826  # makes the MAD comparable to an SD for normal data
+
+# Cohort facets: key -> (label, column of the animal frame). "additive" is per day, see animal_frame.
+FACETS = {
+    "production": ("Production type", "ProductionType"),
+    "animal_type": ("Animal type", "AnimalType"),
+    "breed": ("Breed", "Breed"),
+    "location": ("Experimental location", "ExperimentalLocation"),
+    "additive": ("Additive (as recorded)", "MethaneInhibitingFeedAdditive"),
+    "study": ("Studies", "studyId"),
+}
+# "Must have" measurements: label -> kgAnimalDay column. An animal qualifies with at least one day of it.
+HAS = {"CH4": "CH4_g_d", "Dry matter intake": "DryMatterIntake", "Milk yield": "MilkProduction", "Body weight": "BodyWeight"}
+UNKNOWN = "(unknown)"
 
 
 def synthetic_dir() -> Path | None:
@@ -58,6 +72,108 @@ def load_tables(source: str) -> dict[str, pd.DataFrame]:
     if len(days):
         days["Date"] = pd.to_datetime(days["Date"], errors="coerce")
     return out
+
+
+def animal_frame(studies: pd.DataFrame, animals: pd.DataFrame, days: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(one row per animal with its facet values and days per required measurement,
+    animal_id x additive pairs for the per-day additive facet)."""
+    keys = pd.concat([animals[["studyId", "animal_id"]], days[["studyId", "animal_id"]]]).drop_duplicates("animal_id")
+    cols = [c for c in ["animal_id", "ProductionType", "AnimalType", "Breed"] if c in animals]
+    out = keys.merge(animals[cols], on="animal_id", how="left")
+    study_cols = [c for c in ["studyId", "isOpenData", "ProductionType", "ExperimentalLocation"] if c in studies]
+    out = out.merge(studies[study_cols].rename(columns={"ProductionType": "_studyProduction"}), on="studyId", how="left")
+    if "_studyProduction" in out:
+        out["ProductionType"] = out.get("ProductionType", pd.Series(index=out.index, dtype=object)).fillna(out.pop("_studyProduction"))
+    for _, col in FACETS.values():
+        if col not in out and col != "MethaneInhibitingFeedAdditive":
+            out[col] = None
+    for col in ["ProductionType", "AnimalType", "Breed", "ExperimentalLocation"]:
+        out[col] = out[col].fillna(UNKNOWN).astype(str).replace({"": UNKNOWN})
+    out["isOpenData"] = out.get("isOpenData", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    for label, col in HAS.items():
+        n = days.loc[days[col].notna(), "animal_id"].value_counts() if col in days else pd.Series(dtype=int)
+        out[label] = out["animal_id"].map(n).fillna(0).astype(int)
+    add_col = FACETS["additive"][1]
+    additives = (days[["animal_id", add_col]].fillna({add_col: UNKNOWN}).drop_duplicates() if add_col in days
+                 else pd.DataFrame(columns=["animal_id", add_col]))
+    return out.reset_index(drop=True), additives
+
+
+def facet_masks(animals: pd.DataFrame, additives: pd.DataFrame, chosen: dict[str, list[str]]) -> dict[str, pd.Series]:
+    """Per facet: True for animals that match its selection (an empty selection matches every animal)."""
+    masks = {}
+    for key, (_, col) in FACETS.items():
+        sel = chosen.get(key) or []
+        if not sel:
+            masks[key] = pd.Series(True, index=animals.index)
+        elif key == "additive":
+            ids = set(additives.loc[additives[col].isin(sel), "animal_id"])
+            masks[key] = animals["animal_id"].isin(ids)
+        else:
+            masks[key] = animals[col].isin(sel)
+    return masks
+
+
+def facet_counts(animals: pd.DataFrame, additives: pd.DataFrame, masks: dict[str, pd.Series],
+                 base: pd.Series) -> dict[str, pd.Series]:
+    """Per facet: animals per value among those matching `base` and every OTHER facet (so a list never
+    empties itself as the user picks values from it)."""
+    out = {}
+    for key, (_, col) in FACETS.items():
+        ok = base.copy()
+        for other, m in masks.items():
+            if other != key:
+                ok &= m
+        if key == "additive":
+            out[key] = additives[additives["animal_id"].isin(animals.loc[ok, "animal_id"])][col].value_counts()
+        else:
+            out[key] = animals.loc[ok, col].value_counts()
+    return out
+
+
+def cohort_days(days: pd.DataFrame, animal_ids: set, date_from, date_to, additive: list[str]) -> pd.DataFrame:
+    """The animal-day rows of the cohort: chosen animals, inside the date range, on a chosen additive (if any)."""
+    keep = days["animal_id"].isin(animal_ids)
+    if date_from is not None:
+        keep &= days["Date"] >= pd.Timestamp(date_from)
+    if date_to is not None:
+        keep &= days["Date"] <= pd.Timestamp(date_to)
+    add_col = FACETS["additive"][1]
+    if additive and add_col in days:
+        keep &= days[add_col].fillna(UNKNOWN).isin(additive)
+    return days[keep]
+
+
+def study_overview(days: pd.DataFrame, studies: pd.DataFrame) -> pd.DataFrame:
+    """One row per study in the cohort. Design is inferred from the data: within-animal when animals changed
+    treatment (crossover / switchback), between-animal when each kept one."""
+    if days.empty:
+        return pd.DataFrame()
+    g = days.groupby("studyId")
+    trt_per_animal = days.dropna(subset=["Treatment"]).groupby(["studyId", "animal_id"])["Treatment"].nunique()
+    max_trt = trt_per_animal.groupby("studyId").max()
+    visits = days["nVisits"] if "nVisits" in days else pd.Series(np.nan, index=days.index)
+    out = pd.DataFrame({
+        "Animals": g["animal_id"].nunique(),
+        "Treatments": g["Treatment"].nunique() if "Treatment" in days else 0,
+        "Periods": g["Period"].nunique() if "Period" in days else 0,
+        "Animal-days": g.size(),
+        "CH4 days": g["CH4_g_d"].count() if "CH4_g_d" in days else 0,
+        "Visits": visits.groupby(days["studyId"]).sum(min_count=1),
+        "GF days": visits.gt(0).groupby(days["studyId"]).sum(),
+        "First": g["Date"].min().dt.date,
+        "Last": g["Date"].max().dt.date,
+    })
+    out["Visits / animal / GF day"] = (out["Visits"] / out["GF days"].replace(0, np.nan)).round(1)
+    out["Design"] = max_trt.reindex(out.index).map(lambda m: "within-animal" if m > 1 else "between-animal" if m == 1 else "none recorded")
+    info_cols = [c for c in ["studyId", "isOpenData", "ProductionType", "ExperimentalLocation"] if c in studies]
+    info = studies[info_cols].set_index("studyId")
+    out = info.join(out, how="inner").reset_index()
+    out = out.rename(columns={"studyId": "Study", "isOpenData": "Open data", "ProductionType": "Type",
+                              "ExperimentalLocation": "Location"})
+    order = ["Study", "Open data", "Type", "Location", "Design", "Periods", "Animals", "Treatments", "Animal-days",
+             "CH4 days", "Visits", "Visits / animal / GF day", "First", "Last"]
+    return out[[c for c in order if c in out]]
 
 
 def numeric_columns(df: pd.DataFrame) -> list[str]:
