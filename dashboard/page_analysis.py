@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ if str(_DASHBOARD_ROOT) not in sys.path:
 from gems_analysis import (  # noqa: E402
     FACETS,
     HAS,
+    UNKNOWN,
     animal_frame,
     animal_period_means,
     cohort_days,
@@ -60,6 +62,45 @@ page_header(
     "Data built from the GEMS knowledge graph: choose a cohort in the sidebar, see what it holds, "
     "fit a mixed model, and export the cohort.",
 )
+# This page only: use the full window width and the compact look of the kg_map_claude workbench.
+st.markdown("""<style>
+  .block-container, [data-testid="stMainBlockContainer"] {
+    max-width: none !important; padding-left: 2.2rem !important; padding-right: 2.2rem !important; }
+  [data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.6rem; }
+  .ga-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 2px 0 10px; }
+  .ga-tile { border: 1px solid rgba(128,128,128,.25); border-radius: 10px; padding: 9px 12px; background: rgba(128,128,128,.04); }
+  .ga-tile .l { font-size: 12px; opacity: .75; }
+  .ga-tile .v { font-size: 22px; font-weight: 600; margin-top: 2px; line-height: 1.25; }
+  .ga-tile .d { font-size: 12px; opacity: .6; }
+  .ga-h { font-size: 15px; font-weight: 600; margin: 14px 0 0; }
+  .ga-sub { font-size: 12.5px; opacity: .75; margin: 0 0 6px; }
+</style>""", unsafe_allow_html=True)
+
+# Chart colours from the kg_map_claude palette (categorical series, neutral "other", one-hue ramp).
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+OTHER, EMPTY, CRITICAL = "#b4b2aa", "#e1e0d9", "#d03b3b"
+SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+PRODUCTION_COLORS = {"Dairy": SERIES[0], "Beef": SERIES[1], UNKNOWN: OTHER}
+
+
+def heading(title: str, sub: str = "") -> None:
+    st.markdown(f'<div class="ga-h">{escape(title)}</div>' + (f'<div class="ga-sub">{sub}</div>' if sub else ""),
+                unsafe_allow_html=True)
+
+
+def tiles(items: list[tuple[str, str, str]]) -> None:
+    """Compact number tiles: (label, value, detail)."""
+    cells = "".join(f'<div class="ga-tile"><div class="l">{escape(l)}</div><div class="v">{escape(v)}</div>'
+                    f'<div class="d">{escape(d)}</div></div>' for l, v, d in items)
+    st.markdown(f'<div class="ga-tiles">{cells}</div>', unsafe_allow_html=True)
+
+
+def show(fig: go.Figure, height: int) -> None:
+    fig.update_layout(height=height, margin={"l": 8, "r": 8, "t": 28, "b": 8}, font={"size": 12},
+                      legend={"orientation": "h", "y": 1.0, "yanchor": "bottom", "x": 0, "title_text": ""})
+    st.plotly_chart(fig, use_container_width=True)
+
+
 user = require_authorized_user()
 sidebar_user(user)
 user_info = get_current_user_info()
@@ -91,14 +132,37 @@ animals, additives = animal_frame(studies, animals_t, days)
 st.sidebar.markdown("### Cohort")
 st.sidebar.caption("Every tab uses this selection. The number after each choice counts the animals "
                    "that also match your other choices.")
-if st.sidebar.button("Clear choices"):
-    for key in FACETS:
-        st.session_state.pop(f"facet_{key}", None)
-    st.session_state.pop("cohort_has", None)
-    st.session_state.pop("cohort_open", None)
-    st.session_state.pop("cohort_dates", None)
+PRESETS = {
+    "All with CH4": ({}, ["CH4"]),
+    "Dairy · CH4 + DMI + milk": ({"production": ["Dairy"]}, ["CH4", "Dry matter intake", "Milk yield"]),
+    "Beef · CH4 + DMI": ({"production": ["Beef"]}, ["CH4", "Dry matter intake"]),
+}
+
+
+def _clear_cohort() -> None:
+    for k in [f"facet_{f}" for f in FACETS] + ["cohort_has", "cohort_open", "cohort_dates"]:
+        st.session_state.pop(k, None)
+
+
+def _apply_preset() -> None:
+    name = st.session_state.get("cohort_preset")
+    if not name:
+        return
+    facets, needs = PRESETS[name]
+    _clear_cohort()
+    for key, vals in facets.items():
+        present = set(animals[FACETS[key][1]])
+        st.session_state[f"facet_{key}"] = [v for v in vals if v in present]
+    st.session_state["cohort_has"] = needs
+    st.session_state["cohort_preset"] = None
+
+
+st.sidebar.pills("Quick start", list(PRESETS), key="cohort_preset", on_change=_apply_preset)
+st.sidebar.button("Clear choices", on_click=_clear_cohort)
 open_only = st.sidebar.toggle("Open-data studies only", key="cohort_open")
-has = st.sidebar.multiselect("Must have", list(HAS), default=["CH4"], key="cohort_has",
+if "cohort_has" not in st.session_state:
+    st.session_state["cohort_has"] = ["CH4"]
+has = st.sidebar.multiselect("Must have", list(HAS), key="cohort_has",
                              help="Keep animals with at least one day of each of these measurements.")
 base = pd.Series(True, index=animals.index)
 for label in has:
@@ -109,11 +173,13 @@ if open_only:
 chosen = {k: list(st.session_state.get(f"facet_{k}", [])) for k in FACETS}
 masks = facet_masks(animals, additives, chosen)
 counts = facet_counts(animals, additives, masks, base)
+more = st.sidebar.expander("More filters", expanded=any(chosen[k] for k in ("breed", "location", "additive")))
 for key, (label, col) in FACETS.items():
     values = sorted(set(additives[col]) if key == "additive" else set(animals[col]), key=str)
     n = counts[key]
-    st.sidebar.multiselect(label, values, key=f"facet_{key}",
-                           format_func=lambda v, n=n: f"{v} ({int(n.get(v, 0)):,})")
+    where = more if key in ("breed", "location", "additive") else st.sidebar
+    where.multiselect(label, values, key=f"facet_{key}",
+                      format_func=lambda v, n=n: f"{v} ({int(n.get(v, 0)):,})")
 
 day_min, day_max = days["Date"].min().date(), days["Date"].max().date()
 dates = st.sidebar.date_input("Dates", value=(day_min, day_max), min_value=day_min, max_value=day_max,
@@ -155,34 +221,37 @@ tab_overview, tab_model, tab_export = st.tabs(["Overview", "Model", "Export"])
 def render_overview() -> None:
     ch4_days = int(cdays["CH4_g_d"].notna().sum()) if "CH4_g_d" in cdays else 0
     visits = int(cdays["nVisits"].sum()) if "nVisits" in cdays else 0
-    t = st.columns(3) + st.columns(3)
-    t[0].metric(f"Studies (of {studies['studyId'].nunique()})", f"{len(cohort_studies)}")
-    t[1].metric(f"Animals (of {len(animals):,})", f"{len(cohort_animals):,}")
-    t[2].metric("Animal-days", f"{len(cdays):,}", help="Days with any measurement or design record.")
-    t[3].metric("CH4 days", f"{ch4_days:,}", help="Animal-days with a GreenFeed CH4 mean (matched visits, CH4 > 0).")
-    t[4].metric("GreenFeed visits", f"{visits:,}", help="Visits matched to an animal, with CH4 > 0.")
-    t[5].metric("Date span", f"{cdays['Date'].min():%Y-%m} → {cdays['Date'].max():%Y-%m}")
+    n_open = int(studies.loc[studies["studyId"].astype(str).isin(cohort_studies), "isOpenData"].sum()) \
+        if "isOpenData" in studies else 0
+    tiles([
+        ("Studies", f"{len(cohort_studies)}", f"of {studies['studyId'].nunique()} · {n_open} open data"),
+        ("Animals", f"{len(cohort_animals):,}", f"of {len(animals):,}"),
+        ("Animal-days", f"{len(cdays):,}", "any measurement or design record"),
+        ("CH4 days", f"{ch4_days:,}", "days with a GreenFeed CH4 mean"),
+        ("GreenFeed visits", f"{visits:,}", "matched to animals, CH4 > 0"),
+        ("Date span", f"{cdays['Date'].min():%Y-%m} → {cdays['Date'].max():%Y-%m}", ""),
+    ])
 
-    st.markdown("#### Studies in the cohort")
-    st.caption("Design is inferred from the data: *within-animal* when animals changed treatment (crossover or "
-               "switchback), *between-animal* when each kept one treatment.")
+    heading("Studies in the cohort", "Design is inferred from the data: <i>within-animal</i> when animals changed "
+            "treatment (crossover or switchback), <i>between-animal</i> when each kept one treatment.")
     ov = study_overview(cdays, studies)
-    st.dataframe(ov, hide_index=True, use_container_width=True,
+    st.dataframe(ov, hide_index=True, use_container_width=True, height=min(420, 35 * len(ov) + 38),
                  column_config={"Open data": st.column_config.CheckboxColumn("Open data")})
 
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="medium")
     with left:
-        st.markdown("#### When the studies ran")
+        heading("When the studies ran", "One bar per study, first to last record in the cohort.")
         tl = ov.assign(Start=pd.to_datetime(ov["First"]), End=pd.to_datetime(ov["Last"]) + pd.Timedelta(days=1))
         fig = px.timeline(tl.sort_values("Start"), x_start="Start", x_end="End", y="Study", color="Type",
+                          color_discrete_map=PRODUCTION_COLORS,
                           hover_data={"Animals": True, "Animal-days": True, "Location": True})
         fig.update_yaxes(autorange="reversed", title=None, type="category")
-        fig.update_layout(height=max(260, 22 * len(tl) + 90), margin={"t": 10, "b": 10}, legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True)
+        show(fig, max(160, 22 * len(tl) + 80))
     with right:
-        st.markdown("#### Coverage: animals × days")
+        heading("Coverage: animals × days", "GreenFeed visits per animal and day. Hover for the treatment.")
         by_ch4 = ov.sort_values("CH4 days", ascending=False)["Study"].tolist()
-        study = st.selectbox("Study", by_ch4, help="Studies ordered by CH4 days in the cohort.")
+        study = st.selectbox("Study", by_ch4, help="Studies ordered by CH4 days in the cohort.",
+                             label_visibility="collapsed")
         sub = cdays[cdays["studyId"].astype(str) == str(study)]
         label_col = "AnimalIdentifier" if "AnimalIdentifier" in sub and sub["AnimalIdentifier"].notna().any() else "animal_id"
         sub = sub.assign(_animal=sub[label_col].astype(str),
@@ -190,15 +259,15 @@ def render_overview() -> None:
                          _trt=sub["Treatment"].fillna("–").astype(str) if "Treatment" in sub else "–")
         z = sub.pivot_table(index="_animal", columns="Date", values="_visits", aggfunc="sum")
         trt = sub.pivot_table(index="_animal", columns="Date", values="_trt", aggfunc="first").reindex_like(z)
+        # grey = a day with other records but no visit; 1 → 6+ visits on the one-hue ramp; blank = no record
+        scale = [[0, EMPTY], [0.5 / 6, EMPTY], [0.5 / 6, SEQ[0]]] + [[k / 6, SEQ[k]] for k in range(1, 7)]
         heat = go.Figure(go.Heatmap(
-            z=z.values, x=z.columns, y=z.index, customdata=trt.values, colorscale="Greens", zmin=0,
-            colorbar={"title": "Visits"}, xgap=1, ygap=1,
+            z=z.values, x=z.columns, y=z.index, customdata=trt.values, colorscale=scale, zmin=0, zmax=6,
+            colorbar={"title": "Visits", "tickvals": [0, 2, 4, 6], "ticktext": ["0", "2", "4", "6+"], "thickness": 12},
+            xgap=1, ygap=1,
             hovertemplate="Animal %{y}<br>%{x|%Y-%m-%d}<br>Visits: %{z}<br>Treatment: %{customdata}<extra></extra>"))
-        heat.update_layout(height=min(900, max(260, 16 * len(z) + 90)), margin={"t": 10, "b": 10},
-                           yaxis={"type": "category", "title": None})
-        st.plotly_chart(heat, use_container_width=True)
-        st.caption("Cells: GreenFeed visits that day (0 = a day with other records but no visit; blank = no record). "
-                   "Hover for the treatment.")
+        heat.update_yaxes(type="category", title=None, autorange="reversed")
+        show(heat, min(900, max(260, 16 * len(z) + 70)))
 
 
 # ---------------------------------------------------------------------------
@@ -211,14 +280,16 @@ def render_model() -> None:
     if not values:
         st.info("The cohort has no numeric measurements.")
         return
-    st.markdown("#### Measurement")
-    c1, c2, c3 = st.columns([2, 2, 3])
+    c1, c2, c3, c4 = st.columns([3, 2, 3, 2], vertical_alignment="bottom")
     response = c1.selectbox("Measurement", values, index=values.index("CH4_g_d") if "CH4_g_d" in values else 0,
                             format_func=lambda c: labels.get(c, c))
     level = c2.radio("Level", ["Animal-day", "Animal-period mean"], horizontal=True,
                      help="Animal-period mean: one value per animal, treatment and period.")
     covariates = c3.multiselect("Covariates (optional)", [v for v in values if v != response],
                                 format_func=lambda c: labels.get(c, c))
+    screen = c4.toggle("Remove outliers", value=False,
+                       help="Off by default. Values outside the plausible range are original source data; "
+                            "decide here whether to screen them, and see what is removed.")
     used = [response] + covariates
     if level == "Animal-period mean":
         data = animal_period_means(data, used)
@@ -227,12 +298,9 @@ def render_model() -> None:
         st.info("No records have all the chosen measurements and a treatment.")
         return
 
-    st.markdown("#### Outlier screening")
-    screen = st.toggle("Remove outliers", value=False,
-                       help="Off by default. Values outside the plausible range are original source data; "
-                            "decide here whether to screen them, and see what is removed.")
     removed = pd.Series(False, index=data.index)
     if screen:
+        heading("Outlier screening")
         s1, s2, s3 = st.columns([3, 2, 1])
         screen_cols = s1.multiselect("Screen these measurements", used, default=[response],
                                      format_func=lambda c: labels.get(c, c))
@@ -247,57 +315,68 @@ def render_model() -> None:
             per_study = (data.assign(removed=removed).groupby("studyId")
                          .agg(records=("removed", "size"), removed=("removed", "sum"),
                               animals_affected=("animal_id", lambda a: a[removed[a.index]].nunique())))
-            st.dataframe(per_study.reset_index(), hide_index=True, use_container_width=True)
+            with st.expander(f"Removed per study: {int(removed.sum()):,} of {len(data):,} records"):
+                st.dataframe(per_study.reset_index(), hide_index=True, use_container_width=True)
     kept = data[~removed]
 
-    st.markdown("#### By treatment")
+    n_studies = data["studyId"].nunique()
+    heading("By treatment", "One panel per study." + (" Red: removed by the outlier screen." if screen else ""))
     plot = data.assign(Status=np.where(removed, "Removed", "Kept"))
-    n_studies = plot["studyId"].nunique()
-    fig = px.strip(plot, x="Treatment", y=response, color="Status", facet_col="studyId", facet_col_wrap=4,
-                   color_discrete_map={"Kept": "#2E7D32", "Removed": "#C62828"},
-                   labels={response: labels.get(response, response)}, stripmode="overlay")
-    fig.update_traces(marker={"size": 4, "opacity": 0.55}, jitter=0.4)
-    fig.update_layout(height=380 if n_studies <= 4 else 260 * int(np.ceil(n_studies / 4)),
-                      legend_title_text="", margin={"t": 40})
-    st.plotly_chart(fig, use_container_width=True)
-    summary = (kept.groupby(["studyId", "Treatment"])[response]
-               .agg(n="count", mean="mean", sd="std", median="median").round(2).reset_index())
-    st.dataframe(summary, hide_index=True, use_container_width=True)
+    wrap = min(6, n_studies)
+    fig = px.strip(plot, x="Treatment", y=response, color="Status", facet_col="studyId", facet_col_wrap=wrap,
+                   facet_col_spacing=0.03, facet_row_spacing=min(0.08, 0.6 / max(1, int(np.ceil(n_studies / wrap)))),
+                   color_discrete_map={"Kept": SERIES[0], "Removed": CRITICAL},
+                   labels={response: labels.get(response, response), "Treatment": ""}, stripmode="overlay")
+    fig.update_traces(marker={"size": 4, "opacity": 0.5}, jitter=0.45)
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    fig.update_xaxes(matches=None)
+    show(fig, 240 * int(np.ceil(n_studies / wrap)) + 40)
+    with st.expander("Summary by study and treatment"):
+        summary = (kept.groupby(["studyId", "Treatment"])[response]
+                   .agg(n="count", mean="mean", sd="std", median="median").round(2).reset_index())
+        st.dataframe(summary, hide_index=True, use_container_width=True)
 
-    st.markdown("#### Mixed model")
+    heading("Mixed model")
     group_cols = ["studyId", "animal_id"] if kept["studyId"].nunique() > 1 else ["animal_id"]
     rhs = " + ".join(["Treatment"] + covariates)
     random_text = "study and animal within study" if len(group_cols) == 2 else "animal"
     treatments = sorted(kept["Treatment"].astype(str).unique())
-    reference = st.selectbox("Reference treatment", treatments,
-                             index=treatments.index("Control") if "Control" in treatments else 0,
-                             help="The other treatments are estimated as differences from this one.")
+    setup, results = st.columns([1, 2], gap="large")
+    with setup:
+        reference = st.selectbox("Reference treatment", treatments,
+                                 index=treatments.index("Control") if "Control" in treatments else 0,
+                                 help="The other treatments are estimated as differences from this one.")
+        st.markdown(f"`{response} ~ {rhs}`  \nRandom intercepts for {random_text}; {len(kept):,} records.")
+        fit = st.button("Fit model", type="primary")
     model_data = kept.assign(Treatment=pd.Categorical(kept["Treatment"].astype(str),
                                                       categories=[reference] + [t for t in treatments if t != reference]))
-    st.markdown(f"`{response} ~ {rhs}` with random intercepts for {random_text}; {len(kept):,} records.")
-    if not st.button("Fit model", type="primary"):
-        return
-    try:
-        with st.spinner("Fitting…"):
-            model = fit_mixedlm_multi(model_data, build_formula(response, ["Treatment"] + covariates), group_cols, nested=True)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"The model could not be fitted: {exc}")
-        return
-    stats = fit_statistics(model, "mixed")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Observations", f"{int(stats.get('nobs') or 0):,}")
-    m2.metric("Log-likelihood", f"{stats['llf']:.1f}" if stats.get("llf") is not None else "—")
-    m3.metric("Converged", "Yes" if getattr(model, "converged", False) else "No")
-    coefs = coefficient_table(model)
-    coefs = coefs[~coefs["term"].astype(str).str.endswith(" Var")]  # variances are shown below
-    if "p_value" in coefs:
-        coefs["p_value"] = coefs["p_value"].map(lambda p: "" if pd.isna(p) else "<0.001" if p < 0.001 else f"{p:.3f}")
-    st.markdown("**Fixed effects**")
-    st.dataframe(coefs.round(3), hide_index=True, use_container_width=True)
-    names = {"Group": group_cols[0], "animal_id": "animal within study" if len(group_cols) == 2 else "animal"}
-    variances = pd.DataFrame(variance_components(model)).replace({"name": names})
-    st.markdown("**Variance components**")
-    st.dataframe(variances.round(3), hide_index=True, use_container_width=True)
+    with results:
+        if not fit:
+            st.caption("Results appear here after **Fit model**.")
+            return
+        try:
+            with st.spinner("Fitting…"):
+                model = fit_mixedlm_multi(model_data, build_formula(response, ["Treatment"] + covariates), group_cols, nested=True)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"The model could not be fitted: {exc}")
+            return
+        stats = fit_statistics(model, "mixed")
+        tiles([
+            ("Observations", f"{int(stats.get('nobs') or 0):,}", ""),
+            ("Log-likelihood", f"{stats['llf']:.1f}" if stats.get("llf") is not None else "—", ""),
+            ("Converged", "Yes" if getattr(model, "converged", False) else "No", ""),
+        ])
+        coefs = coefficient_table(model)
+        coefs = coefs[~coefs["term"].astype(str).str.endswith(" Var")]  # variances are shown beside
+        if "p_value" in coefs:
+            coefs["p_value"] = coefs["p_value"].map(lambda p: "" if pd.isna(p) else "<0.001" if p < 0.001 else f"{p:.3f}")
+        names = {"Group": group_cols[0], "animal_id": "animal within study" if len(group_cols) == 2 else "animal"}
+        variances = pd.DataFrame(variance_components(model)).replace({"name": names})
+        f1, f2 = st.columns([3, 2])
+        f1.markdown("**Fixed effects**")
+        f1.dataframe(coefs.round(3), hide_index=True, use_container_width=True)
+        f2.markdown("**Variance components**")
+        f2.dataframe(variances.round(3), hide_index=True, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +391,19 @@ def _csv(frame: pd.DataFrame, item: str):
 
 
 def render_export() -> None:
-    st.markdown("#### Recipe")
-    st.caption("The choices that define this cohort. Keep it with your results so the selection can be repeated.")
-    recipe_json = json.dumps(recipe, indent=2, default=str)
-    st.code(recipe_json, language="json")
-    st.download_button("Download recipe (JSON)", recipe_json, file_name="gems_cohort_recipe.json",
-                       mime="application/json", on_click="ignore")
+    left, right = st.columns([1, 1], gap="large")
+    with left:
+        heading("Recipe", "The choices that define this cohort. Keep it with your results so the selection can be repeated.")
+        recipe_json = json.dumps(recipe, indent=2, default=str)
+        st.code(recipe_json, language="json")
+        st.download_button("Download recipe (JSON)", recipe_json, file_name="gems_cohort_recipe.json",
+                           mime="application/json", on_click="ignore")
+    with right:
+        render_tables()
 
-    st.markdown("#### Tables")
+
+def render_tables() -> None:
+    heading("Tables", "The cohort's rows, ready for R, Python or a spreadsheet.")
     st.download_button(f"Data dictionary — {len(dictionary):,} rows (CSV)", dictionary.to_csv(index=False),
                        file_name="gems_kg_data_dictionary.csv", mime="text/csv", on_click="ignore",
                        help="Column labels, units and ontology terms. No data values.")
