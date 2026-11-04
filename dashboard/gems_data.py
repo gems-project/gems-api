@@ -133,6 +133,12 @@ def _filter_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=drop) if drop else df
 
 
+# Cell text that means "no value" in contributor workbooks.
+_MISSING_TOKENS = {"", "na", "n/a", "nan", "null", "none", ".", "-", "--", "#n/a", "#value!", "#div/0!"}
+# A text column becomes numeric when at least this share of its filled cells are numbers.
+_NUMERIC_SHARE = 0.9
+
+
 def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     """Make numeric columns visible to ``select_dtypes(include='number')``.
 
@@ -147,7 +153,14 @@ def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     We convert cases 1–3 to plain numpy floats/ints. String columns that
     look like zero-padded identifiers (``"056"``) are left untouched so we
     don't silently drop leading zeros.
+
+    Gold keeps contributors' cells as text, so a measurement column can hold
+    a few values that are not numbers ("NA", "<30", ...). A text column is
+    converted when at least ``_NUMERIC_SHARE`` of its filled cells are
+    numbers; the rest become blank and are counted, with examples, in
+    ``df.attrs["non_numeric_blanked"]`` ({column: (count, [examples])}).
     """
+    blanked: dict[str, tuple[int, list[str]]] = dict(df.attrs.get("non_numeric_blanked", {}))
     for col in df.columns:
         s = df[col]
         dtype = s.dtype
@@ -189,10 +202,16 @@ def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
             )
             if zero_padded:
                 continue
-            try:
-                df[col] = pd.to_numeric(s)
-            except (ValueError, TypeError):
-                pass
+            text = s.str.strip()
+            text = text.mask(text.str.lower().isin(_MISSING_TOKENS))
+            num = pd.to_numeric(text, errors="coerce")
+            filled = int(text.notna().sum())
+            parsed = int(num.notna().sum())
+            if filled and parsed / filled >= _NUMERIC_SHARE:
+                df[col] = num
+                if parsed < filled:
+                    bad = text[text.notna() & num.isna()]
+                    blanked[col] = (filled - parsed, [str(v) for v in bad.unique()[:3]])
             continue
 
         # Mixed / other object content: best-effort.
@@ -201,6 +220,7 @@ def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
         except (ValueError, TypeError):
             pass
 
+    df.attrs["non_numeric_blanked"] = blanked
     return df
 
 

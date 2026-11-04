@@ -182,8 +182,10 @@ def _normalize_join_key(s: pd.Series) -> pd.Series:
 
 def _load_joined() -> pd.DataFrame:
     frames = []
+    blanked: dict[str, tuple[int, list[str]]] = {}
     for t in selected_tables:
         df_t = data.load_dataframe(t)
+        table_blanked = df_t.attrs.get("non_numeric_blanked", {})
         df_t = df_t.loc[:, ~df_t.columns.duplicated()]
         for k in join_keys:
             if k in df_t.columns:
@@ -205,14 +207,14 @@ def _load_joined() -> pd.DataFrame:
                     rename_map[c] = f"{short}__{c}"
             if rename_map:
                 df_t = df_t.rename(columns=rename_map)
+                table_blanked = {rename_map.get(c, c): v for c, v in table_blanked.items()}
+        blanked.update(table_blanked)
         frames.append(df_t)
-
-    if len(frames) == 1:
-        return frames[0]
 
     out = frames[0]
     for df_t in frames[1:]:
         out = out.merge(df_t, on=join_keys, how=join_how)
+    out.attrs["non_numeric_blanked"] = blanked
     return out
 
 
@@ -255,6 +257,15 @@ c_c.metric("Tables joined", f"{len(selected_displays)}")
 with st.expander("Preview first 50 rows"):
     st.dataframe(df.head(50), use_container_width=True)
 
+blanked = df.attrs.get("non_numeric_blanked", {})
+blanked = {c: v for c, v in blanked.items() if c in df.columns}
+if blanked:
+    st.caption(
+        "Some cells in number columns held text, not a number; they are treated as missing: "
+        + "; ".join(f"`{c}` {n:,}" for c, (n, _) in blanked.items())
+        + ". See **Column dtypes** for examples."
+    )
+
 with st.expander("Column dtypes (for debugging)"):
     dtype_df = pd.DataFrame(
         {
@@ -268,6 +279,8 @@ with st.expander("Column dtypes (for debugging)"):
                 )
                 for c in df.columns
             ],
+            "text cells set to missing": [blanked.get(c, (0, []))[0] for c in df.columns],
+            "examples": [", ".join(blanked.get(c, (0, []))[1]) for c in df.columns],
         }
     )
     st.dataframe(dtype_df, use_container_width=True, hide_index=True)
