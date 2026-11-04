@@ -226,3 +226,9 @@ gems-api.zip
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Unpublished manuscript drafts (this repo is public)
+paper/
+
+# Local Claude Code settings
+.claude/

@@ -143,6 +143,9 @@ def fit_mixedlm_multi(
     crossed = bool(vc) and not nested
     if re_formula and not crossed:
         kwargs["re_formula"] = re_formula
+    elif vc and nested:
+        # statsmodels drops the group's random intercept when vc_formula is given; keep it.
+        kwargs["re_formula"] = "1"
 
     return smf.mixedlm(**kwargs).fit(method="lbfgs")
 
@@ -347,12 +350,8 @@ def variance_components(model) -> list[dict]:
     try:
         vcomp = getattr(model, "vcomp", None)
         if vcomp is not None:
-            vc_names: list[str] = []
-            for attr in ("vc_names", "_vc_names", "exog_vc_names"):
-                v = getattr(model, attr, None) or getattr(model.model, attr, None)
-                if v is not None:
-                    vc_names = list(v)
-                    break
+            exog_vc = getattr(model.model, "exog_vc", None)
+            vc_names: list[str] = list(getattr(exog_vc, "names", None) or [])
             vcomp_arr = np.asarray(vcomp, dtype=float)
             for i, v in enumerate(vcomp_arr):
                 name = vc_names[i] if i < len(vc_names) else f"vc[{i}]"
