@@ -860,12 +860,13 @@ def _render_actions(authorized: bool) -> None:
             unsafe_allow_html=True,
         )
     actions = [
+        ("page_analysis.py", "Analysis", "🧪", "Compare treatments and fit mixed models on KG data."),
         ("page_explore.py", "Explore", "🔎", "Browse tables, preview rows and draw quick charts."),
         ("page_modeling.py", "Modeling", "📈", "Fit regression and mixed models, no code needed."),
         ("page_chat.py", "Chat", "💬", "Ask questions in plain English; read-only queries."),
         ("page_api_access.py", "API Access", "🔑", "Get a personal key to pull data into Python or R."),
     ]
-    cols = st.columns(4, gap="medium")
+    cols = st.columns(len(actions), gap="medium")
     for col, (page, label, icon, blurb) in zip(cols, actions):
         with col, st.container(border=True):
             st.page_link(page, label=f"**{label}**", icon=icon)
@@ -932,6 +933,7 @@ def _render_home() -> None:
 pg = st.navigation(
     [
         st.Page(_render_home, title="Home", icon="🌱", default=True),
+        st.Page("page_analysis.py", title="Analysis", icon="🧪"),
         st.Page("page_explore.py", title="Explore", icon="🔎"),
         st.Page("page_modeling.py", title="Modeling", icon="📈"),
         st.Page("page_chat.py", title="Chat", icon="💬"),
