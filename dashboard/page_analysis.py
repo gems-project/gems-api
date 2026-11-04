@@ -140,7 +140,7 @@ PRESETS = {
 
 
 def _clear_cohort() -> None:
-    for k in [f"facet_{f}" for f in FACETS] + ["cohort_has", "cohort_open", "cohort_dates"]:
+    for k in [f"facet_{f}" for f in FACETS] + ["cohort_has", "cohort_access", "cohort_dates"]:
         st.session_state.pop(k, None)
 
 
@@ -159,7 +159,10 @@ def _apply_preset() -> None:
 
 st.sidebar.pills("Quick start", list(PRESETS), key="cohort_preset", on_change=_apply_preset)
 st.sidebar.button("Clear choices", on_click=_clear_cohort)
-open_only = st.sidebar.toggle("Open-data studies only", key="cohort_open")
+if "cohort_access" not in st.session_state:
+    st.session_state["cohort_access"] = "All"
+access = st.sidebar.segmented_control("Data access", ["All", "Open", "Not open"], key="cohort_access",
+                                      help="Open: studies the contributors agreed to share openly (DUA summary).") or "All"
 if "cohort_has" not in st.session_state:
     st.session_state["cohort_has"] = ["CH4"]
 has = st.sidebar.multiselect("Must have", list(HAS), key="cohort_has",
@@ -167,8 +170,8 @@ has = st.sidebar.multiselect("Must have", list(HAS), key="cohort_has",
 base = pd.Series(True, index=animals.index)
 for label in has:
     base &= animals[label] > 0
-if open_only:
-    base &= animals["isOpenData"]
+if access != "All":
+    base &= animals["isOpenData"] == (access == "Open")
 
 chosen = {k: list(st.session_state.get(f"facet_{k}", [])) for k in FACETS}
 masks = facet_masks(animals, additives, chosen)
@@ -200,7 +203,7 @@ st.sidebar.markdown(f"**{len(cohort_studies)}** studies · **{len(cohort_animals
 recipe = {
     "source": source,
     "made": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    "openDataOnly": bool(open_only),
+    "dataAccess": access,
     "mustHave": {label: HAS[label] for label in has},
     "facets": {FACETS[k][1]: v for k, v in chosen.items() if v},
     "dateFrom": str(date_from) if date_from else None,
@@ -235,8 +238,8 @@ def render_overview() -> None:
     heading("Studies in the cohort", "Design is inferred from the data: <i>within-animal</i> when animals changed "
             "treatment (crossover or switchback), <i>between-animal</i> when each kept one treatment.")
     ov = study_overview(cdays, studies)
-    st.dataframe(ov, hide_index=True, use_container_width=True, height=min(420, 35 * len(ov) + 38),
-                 column_config={"Open data": st.column_config.CheckboxColumn("Open data")})
+    table = ov.assign(**{"Open data": ov["Open data"].map({True: "Open", False: "Not open"})}) if "Open data" in ov else ov
+    st.dataframe(table, hide_index=True, use_container_width=True, height=min(420, 35 * len(ov) + 38))
 
     left, right = st.columns(2, gap="medium")
     with left:
