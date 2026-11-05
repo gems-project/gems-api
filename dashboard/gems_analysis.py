@@ -7,7 +7,8 @@ Two sources:
   connection, so local testing cannot pull real data.
 
 Also holds the pure helpers the page uses: the cohort (facets, date range, required measurements),
-per-study overview, animal-period means and robust outlier flags.
+per-study overview, animal-period means, robust outlier flags, and the variables the page calculates
+per cow-day (methane yield, FPCM, nutrient intakes, ...; see CALCULATED), which are not stored anywhere.
 """
 
 from __future__ import annotations
@@ -219,3 +220,127 @@ def robust_outliers(df: pd.DataFrame, cols: list[str], group_cols: list[str],
         z = (x - med).abs() / (MAD_SCALE * mad.replace(0, np.nan))
         flags[col] = (z > threshold) & (n >= min_n)
     return flags
+
+
+# ---------------------------------------------------------------------------
+# Variables calculated per cow-day in the page (not stored in Databricks or the KG)
+# ---------------------------------------------------------------------------
+CH4_MJ_PER_G = 0.05565  # energy content of methane: 55.65 MJ/kg (IPCC)
+
+# kgDietNutrients column (g/kg DM) -> (intake column, short name). Intake = DMI x content / 1000, in kg/d.
+DIET_NUTRIENTS = {
+    "CrudeProtein": ("CrudeProteinIntake", "crude protein"),
+    "NeutralDetergentFiber": ("NeutralDetergentFiberIntake", "NDF"),
+    "AcidDetergentFiber": ("AcidDetergentFiberIntake", "ADF"),
+    "Starch": ("StarchIntake", "starch"),
+    "EtherExtract": ("EtherExtractIntake", "ether extract"),
+    "OrganicMatter": ("OrganicMatterIntake", "organic matter"),
+}
+DIET_NOTE = ("Diet values: the average of all analyses of the cow's diet that day (offered diet, so sorting "
+             "and refusals are ignored). Days with two treatments recorded are left out.")
+
+# column -> (label, unit, how it is calculated, extra note or "")
+CALCULATED = {
+    "MethaneYield": ("Methane yield", "g/kg DMI", "CH4 ÷ DMI", "Most studies' DMI leaves out the GreenFeed pellets."),
+    "MethaneIntensityMilk": ("Methane intensity, milk", "g/kg milk", "CH4 ÷ milk yield", ""),
+    "FPCM": ("Fat- and protein-corrected milk", "kg/d",
+             "milk × (0.1226 × fat % + 0.0722 × crude protein % + 0.2534), IDF 2022", ""),
+    "MethaneIntensityFPCM": ("Methane intensity, FPCM", "g/kg FPCM", "CH4 ÷ FPCM", ""),
+    "MilkFatYield": ("Milk fat yield", "kg/d", "milk × fat % ÷ 100", ""),
+    "MilkProteinYield": ("Milk protein yield", "kg/d", "milk × crude protein % ÷ 100", ""),
+    "FeedEfficiency": ("Feed efficiency", "kg FPCM/kg DMI", "FPCM ÷ DMI", ""),
+    "ForageShare": ("Forage share of intake", "%", "forage intake ÷ DMI × 100", ""),
+    "MethanePerMetabolicBW": ("Methane per metabolic body weight", "g/kg BW^0.75", "CH4 ÷ BW^0.75",
+                              "Only on days the cow was weighed."),
+    "DMIPercentBW": ("DMI as % of body weight", "%", "DMI ÷ BW × 100", "Only on days the cow was weighed."),
+    **{col: (f"{name[0].upper()}{name[1:]} intake", "kg/d", f"DMI × diet {name} (g/kg DM) ÷ 1000", DIET_NOTE)
+       for col, name in DIET_NUTRIENTS.values()},
+    "GrossEnergyIntakeAll": ("Gross energy intake, recorded or from diet", "MJ/d",
+                             "recorded GE intake; where missing, DMI × diet GE (MJ/kg DM)",
+                             "GrossEnergyIntakeSource says which. " + DIET_NOTE),
+    "Ym": ("Methane conversion factor (Ym)", "% of GE intake", "CH4 × 0.05565 MJ/g ÷ GE intake × 100",
+           "Uses the GE intake above (recorded, else from diet)."),
+}
+
+
+def _positive(s: pd.Series) -> pd.Series:
+    """Numbers > 0; anything else (blank, 0, negative, text) becomes missing, so it is never divided by."""
+    s = pd.to_numeric(s, errors="coerce")
+    return s.where(s > 0)
+
+
+def diet_means(diet_nutrients: pd.DataFrame) -> pd.DataFrame:
+    """One row per treatment_id: the mean of each nutrient over all analyses of that treatment's diet."""
+    cols = [c for c in [*DIET_NUTRIENTS, "GrossEnergy"] if c in diet_nutrients]
+    if diet_nutrients.empty or "treatment_id" not in diet_nutrients or not cols:
+        return pd.DataFrame(columns=cols)
+    values = diet_nutrients[cols].apply(pd.to_numeric, errors="coerce")
+    return values.groupby(diet_nutrients["treatment_id"]).mean()
+
+
+def add_calculated(days: pd.DataFrame, diet_nutrients: pd.DataFrame) -> pd.DataFrame:
+    """`days` (kgAnimalDay rows) plus the CALCULATED columns, each for one cow on one day.
+
+    A value is missing when one of its inputs is missing on that day; zero or negative denominators count
+    as missing.
+    """
+    out = days.copy()
+    blank = pd.Series(np.nan, index=out.index)
+
+    def col(name: str) -> pd.Series:
+        return pd.to_numeric(out[name], errors="coerce") if name in out else blank
+
+    ch4, dmi = _positive(col("CH4_g_d")), _positive(col("DryMatterIntake"))
+    milk, bw = _positive(col("MilkProduction")), _positive(col("BodyWeight"))
+    fat, protein = col("MilkFat"), col("MilkProtein")
+
+    out["MethaneYield"] = ch4 / dmi
+    out["MethaneIntensityMilk"] = ch4 / milk
+    fpcm = milk * (0.1226 * fat + 0.0722 * protein + 0.2534)
+    out["FPCM"] = fpcm
+    out["MethaneIntensityFPCM"] = ch4 / _positive(fpcm)
+    out["MilkFatYield"] = milk * fat / 100
+    out["MilkProteinYield"] = milk * protein / 100
+    out["FeedEfficiency"] = fpcm / dmi
+    out["ForageShare"] = col("ForageIntake") / dmi * 100
+    out["MethanePerMetabolicBW"] = ch4 / bw ** 0.75
+    out["DMIPercentBW"] = dmi / bw * 100
+
+    # Diet: each day's treatment -> the average composition of that treatment's diet.
+    diet = diet_means(diet_nutrients)
+    if "treatment_id" in out and not diet.empty:
+        # True as a boolean or as text ("true"), depending on how the table was read
+        conflict = (out["treatmentConflict"].astype(str).str.strip().str.lower() == "true") if "treatmentConflict" in out \
+            else pd.Series(False, index=out.index)
+        usable = out["treatment_id"].where(~conflict)
+        on_day = diet.reindex(usable.to_numpy())
+        on_day.index = out.index
+    else:
+        on_day = pd.DataFrame(index=out.index)
+    for nutrient, (intake, _) in DIET_NUTRIENTS.items():
+        out[intake] = dmi * on_day[nutrient] / 1000 if nutrient in on_day else blank
+
+    recorded = _positive(col("GrossEnergyIntake"))
+    from_diet = dmi * on_day["GrossEnergy"] if "GrossEnergy" in on_day else blank
+    ge = recorded.fillna(from_diet)
+    out["GrossEnergyIntakeAll"] = ge
+    out["GrossEnergyIntakeSource"] = np.where(recorded.notna(), "recorded",
+                                              np.where(from_diet.notna(), "from diet", None))
+    out["Ym"] = ch4 * CH4_MJ_PER_G / _positive(ge) * 100
+    return out
+
+
+def calculated_labels() -> dict[str, str]:
+    """column -> 'label (unit) · calculated' for the variable pickers."""
+    return {c: f"{label} ({unit}) · calculated" for c, (label, unit, _, _) in CALCULATED.items()}
+
+
+def calculated_dictionary() -> pd.DataFrame:
+    """Data-dictionary rows for the calculated columns (same columns as kgDataDictionary where they apply)."""
+    rows = [{"analysisTable": "kgAnimalDay", "column": c, "datatype": "double", "unit": unit,
+             "derivedFrom": f"calculated in the Analysis page: {how}" + (f". {note}" if note else ""), "termLabel": label}
+            for c, (label, unit, how, note) in CALCULATED.items()]
+    rows.append({"analysisTable": "kgAnimalDay", "column": "GrossEnergyIntakeSource", "datatype": "string", "unit": "",
+                 "derivedFrom": "calculated in the Analysis page: 'recorded' or 'from diet' for GrossEnergyIntakeAll",
+                 "termLabel": "Source of gross energy intake"})
+    return pd.DataFrame(rows)

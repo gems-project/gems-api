@@ -28,11 +28,15 @@ if str(_DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_ROOT))
 
 from gems_analysis import (  # noqa: E402
+    CALCULATED,
     FACETS,
     HAS,
     UNKNOWN,
+    add_calculated,
     animal_frame,
     animal_period_means,
+    calculated_dictionary,
+    calculated_labels,
     cohort_days,
     column_labels,
     facet_counts,
@@ -195,6 +199,8 @@ ok = base.copy()
 for m in masks.values():
     ok &= m
 cdays = cohort_days(days, set(animals.loc[ok, "animal_id"]), date_from, date_to, chosen["additive"])
+# Methane yield, FPCM, nutrient intakes, ...: calculated here per cow-day, not stored anywhere.
+cdays = add_calculated(cdays, tables["kgDietNutrients"])
 cohort_studies = sorted(cdays["studyId"].astype(str).unique())
 cohort_animals = set(cdays["animal_id"])
 st.sidebar.markdown(f"**{len(cohort_studies)}** studies · **{len(cohort_animals):,}** animals · "
@@ -209,6 +215,8 @@ recipe = {
     "dateFrom": str(date_from) if date_from else None,
     "dateTo": str(date_to) if date_to else None,
     "result": {"studies": cohort_studies, "animals": len(cohort_animals), "animalDays": len(cdays)},
+    "calculatedColumns": {c: f"{how} [{unit}]" for c, (_, unit, how, _) in CALCULATED.items()
+                          if c in cdays and cdays[c].notna().any()},
 }
 
 if cdays.empty:
@@ -277,7 +285,7 @@ def render_overview() -> None:
 # Model
 # ---------------------------------------------------------------------------
 def render_model() -> None:
-    labels = column_labels(dictionary, "kgAnimalDay")
+    labels = {**column_labels(dictionary, "kgAnimalDay"), **calculated_labels()}
     data = cdays
     values = numeric_columns(data)
     if not values:
@@ -293,6 +301,10 @@ def render_model() -> None:
     screen = c4.toggle("Remove outliers", value=False,
                        help="Off by default. Values outside the plausible range are original source data; "
                             "decide here whether to screen them, and see what is removed.")
+    for c in [v for v in [response] + covariates if v in CALCULATED]:
+        label, unit, how, note = CALCULATED[c]
+        st.caption(f"**{label}** ({unit}) is calculated in this page for each cow and day: {how}. "
+                   f"Missing when an input is missing that day. {note}")
     used = [response] + covariates
     if level == "Animal-period mean":
         data = animal_period_means(data, used)
@@ -397,7 +409,7 @@ def render_export() -> None:
     left, right = st.columns([1, 1], gap="large")
     with left:
         heading("Recipe", "The choices that define this cohort. Keep it with your results so the selection can be repeated.")
-        recipe_json = json.dumps(recipe, indent=2, default=str)
+        recipe_json = json.dumps(recipe, indent=2, default=str, ensure_ascii=False)
         st.code(recipe_json, language="json")
         st.download_button("Download recipe (JSON)", recipe_json, file_name="gems_cohort_recipe.json",
                            mime="application/json", on_click="ignore")
@@ -406,8 +418,10 @@ def render_export() -> None:
 
 
 def render_tables() -> None:
-    heading("Tables", "The cohort's rows, ready for R, Python or a spreadsheet.")
-    st.download_button(f"Data dictionary — {len(dictionary):,} rows (CSV)", dictionary.to_csv(index=False),
+    heading("Tables", "The cohort's rows, ready for R, Python or a spreadsheet. Animal-days include the "
+            "variables calculated in this page; the data dictionary says how each one is calculated.")
+    full_dictionary = pd.concat([dictionary, calculated_dictionary()], ignore_index=True)
+    st.download_button(f"Data dictionary — {len(full_dictionary):,} rows (CSV)", full_dictionary.to_csv(index=False),
                        file_name="gems_kg_data_dictionary.csv", mime="text/csv", on_click="ignore",
                        help="Column labels, units and ontology terms. No data values.")
     can_download = bool(synthetic_dir()) or has_api_access(user_info, user_info.bearer_token)
