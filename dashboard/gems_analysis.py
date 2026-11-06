@@ -13,6 +13,7 @@ per cow-day (methane yield, FPCM, nutrient intakes, ...; see CALCULATED), which 
 
 from __future__ import annotations
 
+import html
 import os
 import re
 from pathlib import Path
@@ -512,7 +513,7 @@ def calculated_dictionary() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 VISIT_COLUMNS = ["studyId", "animal_id", "Start_Time", "End_Time", "goodDataSeconds", "Good_Data_Duration",
                  "CH4_Massflow_g_d", "CO2_Massflow_g_d", "O2_Massflow_g_d", "H2_Massflow_g_d",
-                 "Average_Airflow_L_s", "Was_Interrupted"]
+                 "Average_Airflow_L_s", "Was_Interrupted", "gfunit_id"]
 VISIT_GASES = {"CH4_Massflow_g_d": "CH4_g_d", "CO2_Massflow_g_d": "CO2_g_d", "O2_Massflow_g_d": "O2_g_d",
                "H2_Massflow_g_d": "H2_g_d"}
 DAILY_COLUMNS = ["CH4_g_d", "CO2_g_d", "O2_g_d", "H2_g_d", "nVisits"]
@@ -590,7 +591,8 @@ def prepare_visits(raw: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
     idx = raw.index
     start = pd.to_datetime(raw["Start_Time"], errors="coerce") if "Start_Time" in raw else pd.Series(pd.NaT, index=idx)
     v = pd.DataFrame({"studyId": raw["studyId"].astype(str), "animal_id": raw["animal_id"], "start": start,
-                      "Date": start.dt.normalize()})
+                      "Date": start.dt.normalize(),
+                      "unit": raw["gfunit_id"] if "gfunit_id" in raw else pd.Series(np.nan, index=idx)})
     secs = pd.to_numeric(raw["goodDataSeconds"], errors="coerce") if "goodDataSeconds" in raw else pd.Series(np.nan, index=idx)
     missing = secs.isna()  # fall back to the text duration, then to end - start, only where needed (parsing is slow)
     if missing.any() and "Good_Data_Duration" in raw:
@@ -696,6 +698,84 @@ def visit_attrition(v: pd.DataFrame, status: np.ndarray, rules: dict, cohort: np
                      "animals": int(np.count_nonzero(np.bincount(animal[left], minlength=n_animal)))})
         previous = visits
     return pd.DataFrame(rows)
+
+
+def _value_bins(values: np.ndarray, max_bins: int = 30, q: float = 0.98) -> pd.DataFrame:
+    """Histogram of whole-number counts in at most `max_bins` equal bins up to the q-quantile (at least 10);
+    larger values go into the last bin. Columns x0, x1 (x1 exclusive), n."""
+    values = np.asarray(values)
+    if not len(values):
+        return pd.DataFrame(columns=["x0", "x1", "n"])
+    hi = max(10.0, float(np.quantile(values, q)))
+    step = max(1, int(np.ceil(hi / max_bins)))
+    n_bins = int(np.ceil(hi / step)) + 1
+    counts = np.bincount(np.minimum(values // step, n_bins - 1).astype(np.int64), minlength=n_bins)
+    x0 = np.arange(n_bins) * step
+    return pd.DataFrame({"x0": x0, "x1": x0 + step, "n": counts})
+
+
+def visit_qc_charts(v: pd.DataFrame, status: np.ndarray, cohort: np.ndarray | None = None,
+                    production: pd.Series | None = None, min_n: int = 30) -> dict:
+    """The QC tab's visit diagnostics for the cohort's visits (as in the kg_map_claude workbench):
+
+    duration  — minutes of good data in 0.25-min bins (last bin: 8 min or more), visits before the duration rule
+                (only the phase rule applied);
+    per_day   — animal-days by how many visits the animal made that day (8+ pooled), same visits;
+    hours     — kept visits by hour of day;
+    diurnal   — kept visits, % above or below the same animal's mean that day (days with >= 2 kept visits and a
+                mean >= 20 g/d), mean per hour and production type, hours with at least `min_n` visits;
+    unit_visits / coverage — per animal-period (animal x treatment x period) with visits left before the
+                animal-period rule: its visits (binned) and how many of the 8 three-hour windows they cover.
+    `production`: animal_id -> production type (Dairy, Beef, ...)."""
+    cohort = np.ones(len(v), dtype=bool) if cohort is None else np.asarray(cohort, dtype=bool)
+    day, seg = v["_day"].to_numpy(), v["_segment"].to_numpy()
+    n_day = int(day.max()) + 1 if len(v) else 0
+    base = cohort & (status != 1)  # before the duration rule: only the phase rule applied
+    minutes = v["minutes"].to_numpy(dtype=float)
+    m = minutes[base & ~np.isnan(minutes)]
+    dur = np.bincount(np.minimum(np.floor(m / 0.25), 32).astype(np.int64), minlength=33)
+    x0 = np.arange(33) * 0.25
+    out = {"duration": pd.DataFrame({"x0": x0, "x1": x0 + 0.25, "visits": dur})}
+
+    per_day = np.bincount(day[base], minlength=n_day)
+    per_day = per_day[per_day > 0]
+    counts = np.bincount(np.minimum(per_day, 8), minlength=9)[1:]
+    out["per_day"] = pd.DataFrame({"visits_that_day": [str(k) for k in range(1, 8)] + ["8+"], "animal_days": counts})
+
+    kept = cohort & (status == 0)
+    hour = v["start"].dt.hour.to_numpy()
+    out["hours"] = pd.DataFrame({"hour": np.arange(24), "visits": np.bincount(hour[kept], minlength=24)})
+
+    ch4 = v["CH4_g_d"].to_numpy(dtype=float)
+    day_n = np.bincount(day[kept], minlength=n_day)
+    day_mean = np.bincount(day[kept], weights=ch4[kept], minlength=n_day) / np.maximum(day_n, 1)
+    use = np.flatnonzero(kept & (day_n[day] >= 2) & (day_mean[day] >= 20))
+    # production type per animal (a few thousand look-ups), then per visit by the animal's integer code
+    animal = v["_animal"].to_numpy()
+    first = np.full(int(animal.max()) + 1 if len(v) else 0, -1)
+    first[animal[::-1]] = np.arange(len(animal))[::-1]  # first visit of each animal
+    names = pd.Series(v["animal_id"].to_numpy()[first]).map(production) if production is not None else None
+    names = (names if names is not None else pd.Series(np.nan, index=range(len(first)))).fillna(UNKNOWN).astype(str)
+    kinds, of_animal = np.unique(names.to_numpy(), return_inverse=True)
+    pcode, h = of_animal[animal[use]], hour[use]
+    dev = 100 * (ch4[use] - day_mean[day[use]]) / day_mean[day[use]]
+    n = np.bincount(pcode * 24 + h, minlength=len(kinds) * 24).reshape(len(kinds), 24)
+    total = np.bincount(pcode * 24 + h, weights=dev, minlength=len(kinds) * 24).reshape(len(kinds), 24)
+    order = sorted(range(len(kinds)), key=lambda k: -n[k].sum())  # most visits first
+    rows = [{"production": kinds[k], "hour": hh, "pct": total[k, hh] / n[k, hh], "visits": int(n[k, hh])}
+            for k in order for hh in range(24) if n[k, hh] >= min_n]
+    out["diurnal"] = pd.DataFrame(rows, columns=["production", "hour", "pct", "visits"])
+
+    pre_unit = cohort & ((status == 0) | (status == 8))  # every rule applied except the animal-period rule
+    n_seg = int(seg.max()) + 1 if len(v) else 0
+    unit_visits = np.bincount(seg[pre_unit], minlength=n_seg)
+    has = unit_visits > 0
+    in_window = np.bincount(seg[pre_unit].astype(np.int64) * 8 + v["hour_bin"].to_numpy()[pre_unit],
+                            minlength=n_seg * 8).reshape(n_seg, 8)
+    covered = (in_window > 0).sum(axis=1)
+    out["unit_visits"] = _value_bins(unit_visits[has])
+    out["coverage"] = pd.DataFrame({"windows": np.arange(9), "units": np.bincount(covered[has], minlength=9)[:9]})
+    return out
 
 
 def apply_daily_gases(days: pd.DataFrame, daily: pd.DataFrame) -> None:
@@ -890,3 +970,500 @@ def unverified_numbers(text: str, known: list[float]) -> list[str]:
         if not len(values) or not np.any(np.abs(values - x) <= tol):
             out.append(m.group())
     return list(dict.fromkeys(out))
+
+
+# ---------------------------------------------------------------------------
+# Explore: one animal's record, and how animals differ compared with their own day-to-day spread
+# ---------------------------------------------------------------------------
+def treatment_runs(animal_days: pd.DataFrame) -> pd.DataFrame:
+    """One animal's days in date order, cut into runs of the same treatment and period (a new run starts
+    whenever either changes): Treatment, Period, start, end, days."""
+    cols = ["Treatment", "Period", "start", "end", "days"]
+    if animal_days.empty or "Treatment" not in animal_days:
+        return pd.DataFrame(columns=cols)
+    d = animal_days.sort_values("Date")
+    key = d["Treatment"].astype(str) + "\x1f" + (d["Period"].astype(str) if "Period" in d else "")
+    run = (key != key.shift()).cumsum()
+    g = d.groupby(run.to_numpy(), sort=True)
+    out = pd.DataFrame({"Treatment": g["Treatment"].first(),
+                        "Period": g["Period"].first() if "Period" in d else np.nan,
+                        "start": g["Date"].min(), "end": g["Date"].max(), "days": g.size()})
+    return out[out["Treatment"].notna()].reset_index(drop=True)[cols]
+
+
+def animal_spread(days: pd.DataFrame, value: str) -> pd.DataFrame:
+    """Per animal: days with `value`, its mean and day-to-day SD, and its main treatment (the one on most of
+    those days; how many it had). Sorted by mean, lowest first."""
+    cols = ["animal_id", "days", "mean", "sd", "treatment", "treatments"]
+    d = days.dropna(subset=[value])
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    g = d.groupby("animal_id", sort=False)
+    out = pd.DataFrame({"days": g.size(), "mean": g[value].mean(), "sd": g[value].std()})
+    if "Treatment" in d:
+        trt = d.dropna(subset=["Treatment"]).groupby("animal_id")["Treatment"]
+        out["treatment"] = trt.agg(lambda t: t.astype(str).value_counts().index[0])
+        out["treatments"] = trt.nunique()
+    else:
+        out["treatment"], out["treatments"] = np.nan, 0
+    out["treatments"] = out["treatments"].fillna(0).astype(int)
+    return out.reset_index().sort_values("mean", kind="stable").reset_index(drop=True)[cols]
+
+
+# ---------------------------------------------------------------------------
+# KG view: the knowledge graph's structure with the cohort's counts, the selected studies (treatments, diets,
+# ingredients) and one animal's neighbourhood. Class and link names as in gems.ttl and table_map; drawn from
+# the loaded kg_v1 tables (no extra queries).
+# ---------------------------------------------------------------------------
+KG_SCHEMA_EDGES = [  # (from class, link, to class), as the KG links them
+    ("Animal", "belongsToStudy", "Study"), ("Treatment", "belongsToStudy", "Study"),
+    ("DesignRecord", "aboutAnimal", "Animal"), ("DesignRecord", "receivesTreatment", "Treatment"),
+    ("Treatment", "usesDiet", "Diet"), ("Diet", "hasIngredient", "DietComponent"),
+    ("DietNutrientRecord", "aboutDiet", "Diet"),
+    ("MilkObservation", "aboutAnimal", "Animal"), ("BodyWeightObservation", "aboutAnimal", "Animal"),
+    ("IntakeDayObservation", "aboutAnimal", "Animal"), ("GreenFeedVisit", "aboutAnimal", "Animal"),
+    ("GreenFeedVisit", "recordedBy", "GreenFeedUnit"),
+]
+# Colour groups: the page's categorical colours 1-4 in their fixed order, as (border, fill tint). Text stays ink.
+KG_GROUPS = {"design": ("#2a78d6", "#e4eefb"), "records": ("#eb6834", "#fdece4"),
+             "diet": ("#1baf7a", "#e0f5ed"), "greenfeed": ("#eda100", "#fdf3da")}
+INK, INK_2, MUTED, HAIRLINE, PLANE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#f7f6f2"
+# class -> (colour group, (one, many) for its count, what the count is)
+KG_CLASSES = {
+    "Study": ("design", ("study", "studies"), "Studies in your cohort."),
+    "Animal": ("design", ("animal", "animals"),
+               "Animals with at least one day in your cohort. Animals belong to their study, so a cow that took "
+               "part in two studies is counted in each."),
+    "Treatment": ("design", ("treatment", "treatments"),
+                  "Treatments your cohort's animals received. Labels belong to their study: T1 in one study is "
+                  "not T1 in another."),
+    "DesignRecord": ("records", ("design record", "design records"),
+                     "Experimental-design records: which treatment (and period) an animal was on, on a given day."),
+    "MilkObservation": ("records", ("milk record", "milk records"),
+                        "Milk records, per milking or per day as each study reported them."),
+    "BodyWeightObservation": ("records", ("day with body weight", "days with body weight"),
+                              "Animal-days with a body weight."),
+    "IntakeDayObservation": ("records", ("day with intake", "days with intake"),
+                             "Animal-days with a dry matter intake."),
+    "GreenFeedVisit": ("greenfeed", ("visit", "visits"),
+                       "GreenFeed visits behind the daily CH4, after your visit rules."),
+    "GreenFeedUnit": ("greenfeed", ("unit", "units"), "GreenFeed units that recorded those visits."),
+    "Diet": ("diet", ("diet", "diets"), "Diets of your cohort's treatments (usually one per treatment)."),
+    "DietComponent": ("diet", ("ingredient line", "ingredient lines"),
+                      "Ingredient lines of those diets: one per ingredient in each diet, with its share of the diet."),
+    "DietNutrientRecord": ("diet", ("nutrient analysis", "nutrient analyses"),
+                           "Nutrient analyses of those diets (one per diet and date)."),
+}
+RECORD_CLASSES = ["DesignRecord", "MilkObservation", "BodyWeightObservation", "IntakeDayObservation"]
+DIET_SUMMARY = [("CrudeProtein", "CP"), ("NeutralDetergentFiber", "NDF"), ("Starch", "starch")]  # g/kg DM
+NO_NAME = "(no name)"
+
+
+def _cohort_diets(days: pd.DataFrame, diets: pd.DataFrame, diet_nutrients: pd.DataFrame):
+    """(diet ids, ingredient lines, nutrient records) of the treatments used on `days`."""
+    treatments = set(days["treatment_id"].dropna()) if "treatment_id" in days else set()
+
+    def mine(t: pd.DataFrame) -> pd.DataFrame:
+        return t[t["treatment_id"].isin(treatments)] if {"treatment_id", "diet_id"} <= set(t.columns) else t.iloc[0:0]
+
+    lines, records = mine(diets), mine(diet_nutrients)
+    ids = set(lines["diet_id"].dropna()) | set(records["diet_id"].dropna()) if len(lines) or len(records) else set()
+    return ids, lines, records
+
+
+def _ingredient_names(lines: pd.DataFrame) -> pd.Series:
+    """Ingredient names as recorded (outer spaces dropped; blank names become "(no name)")."""
+    if "Ingredients" not in lines:
+        return pd.Series(NO_NAME, index=lines.index, dtype=object)
+    name = lines["Ingredients"].astype("string").fillna("").str.strip()
+    return name.where(name != "", NO_NAME).astype(str)
+
+
+def kg_schema_counts(days: pd.DataFrame, diets: pd.DataFrame, diet_nutrients: pd.DataFrame,
+                     units: set | None = None) -> dict[str, int | None]:
+    """How many of each KG class the cohort's days (and their diets) hold. Observations are counted as the
+    cohort's animal-day table has them: milk and design records as records, body weight and intake as days
+    with a value, GreenFeed visits as the visits behind the daily gases (after the visit rules). GreenFeed units
+    are counted only when `units` (the units of the cohort's visits) is given. Also "ingredientNames": how many
+    different ingredient names the diets' lines use (None without an Ingredients column)."""
+    def total(c: str) -> int:
+        return int(pd.to_numeric(days[c], errors="coerce").fillna(0).sum()) if c in days else 0
+
+    def filled(c: str) -> int:
+        return int(days[c].notna().sum()) if c in days else 0
+
+    diet_ids, lines, records = _cohort_diets(days, diets, diet_nutrients)
+    names = _ingredient_names(lines)
+    return {"Study": int(days["studyId"].nunique()), "Animal": int(days["animal_id"].nunique()),
+            "Treatment": int(days["treatment_id"].nunique()) if "treatment_id" in days else 0,
+            "DesignRecord": total("nDesignRecords"), "MilkObservation": total("nMilkRecords"),
+            "BodyWeightObservation": filled("BodyWeight"), "IntakeDayObservation": filled("DryMatterIntake"),
+            "GreenFeedVisit": total("nVisits"), "Diet": len(diet_ids), "DietComponent": len(lines),
+            "DietNutrientRecord": len(records), "GreenFeedUnit": None if units is None else len(units),
+            "ingredientNames": int(names[names != NO_NAME].nunique()) if "Ingredients" in lines else None}
+
+
+# --- drawing helpers (Graphviz DOT with HTML-like labels) ---
+def _count_text(cls: str, n: int) -> str:
+    one, many = KG_CLASSES[cls][1]
+    return f"{n:,} {one if n == 1 else many}"
+
+
+def _number(x) -> str:
+    """Short number for a label: 45.0 -> 45, 12.5 -> 12.5, 165.43 -> 165, 1234.5 -> 1,234."""
+    x = float(x)
+    return f"{x:,.0f}" if abs(x) >= 1000 else f"{x:.3g}"
+
+
+def _share_text(share, unit: str) -> str:
+    if share is None or pd.isna(share):
+        return ""
+    return _number(share) + ("" if unit == "%" else " ") + unit
+
+
+def _dot_label(text) -> str:
+    """Text for a quoted DOT attribute."""
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _html(text) -> str:
+    """Text for a Graphviz HTML-like label."""
+    return html.escape(str(text))
+
+
+def _small(text: str, size: int = 10, color: str = INK_2) -> str:
+    return f'<font point-size="{size}" color="{color}">{text}</font>'
+
+
+def _node(node_id: str, label: str, group: str, tooltip: str = "", strong: bool = False,
+          fill: str | None = None) -> str:
+    border, tint = KG_GROUPS[group]
+    attrs = [f"label=<{label}>", f'color="{border}"', f'fillcolor="{fill or tint}"']
+    if strong:
+        attrs.append("penwidth=2")
+    if tooltip:
+        attrs.append(f'tooltip="{_dot_label(tooltip)}"')
+    return f'  "{node_id}" [{", ".join(attrs)}];'
+
+
+def _dot_start(ranksep: float = 0.55) -> list[str]:
+    return ["digraph G {",
+            f'  graph [rankdir=LR, compound=true, bgcolor="transparent", nodesep=0.22, ranksep={ranksep}, '
+            f'fontname="Helvetica", fontsize=10, fontcolor="{INK_2}"];',
+            f'  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, fontcolor="{INK}", '
+            'penwidth=1.2, margin="0.14,0.06"];',
+            f'  edge [fontname="Helvetica", fontsize=9, fontcolor="{MUTED}", color="{MUTED}", arrowsize=0.7, '
+            'penwidth=1];']
+
+
+def _cluster(name: str, label: str, body: list[str]) -> list[str]:
+    title = f'label=<{_small(_html(label))}>; labeljust="l"; ' if label else 'label=""; '
+    return [f"  subgraph cluster_{name} {{",
+            f'  {title}style="rounded,filled"; fillcolor="{PLANE}"; color="{HAIRLINE}"; penwidth=1;',
+            *body, "  }"]
+
+
+def schema_dot(counts: dict) -> str:
+    """Graphviz DOT of the KG's classes, with the cohort's counts, and the links between them. Coloured by
+    group; the four kinds of records about an animal share one aboutAnimal arrow."""
+    def box(cls: str) -> str:
+        n = counts.get(cls)
+        if n is None:
+            sub = _small("<i>load the visits to count</i>", 9, MUTED)
+        else:
+            sub = _small(_html(_count_text(cls, n)))
+            k = counts.get("ingredientNames")
+            if cls == "DietComponent" and k:
+                sub += "<br/>" + _small(f"{k:,} different ingredient name" + ("" if k == 1 else "s"), 9)
+        return _node(cls, f"<b>{cls}</b><br/>{sub}", KG_CLASSES[cls][0], tooltip=KG_CLASSES[cls][2])
+
+    lines = _dot_start()
+    lines += _cluster("records", "Records about an animal", [box(c) for c in RECORD_CLASSES])
+    lines += _cluster("greenfeed", "GreenFeed", [box("GreenFeedVisit"), box("GreenFeedUnit")])
+    lines += _cluster("diet", "Diet", [box(c) for c in ["DietNutrientRecord", "Diet", "DietComponent"]])
+    lines += [box(c) for c in ["Animal", "Treatment", "Study"]]
+    shared_drawn = False
+    for a, link, b in KG_SCHEMA_EDGES:
+        if a in RECORD_CLASSES and link == "aboutAnimal":  # one arrow from the records box
+            if not shared_drawn:
+                lines.append(f'  "{RECORD_CLASSES[2]}" -> "{b}" [label="{link}", ltail=cluster_records];')
+                shared_drawn = True
+            continue
+        lines.append(f'  "{a}" -> "{b}" [label="{link}"];')
+    return "\n".join(lines + ["}"])
+
+
+# --- the selected studies: treatments, diets and ingredients ---
+def _ingredient_lines(diets: pd.DataFrame, diet_ids) -> pd.DataFrame:
+    """Ingredient lines of these diets: diet_id, name (as recorded), share of the diet; largest share first."""
+    cols = ["diet_id", "name", "share"]
+    if diets.empty or "diet_id" not in diets:
+        return pd.DataFrame(columns=cols)
+    d = diets[diets["diet_id"].isin(list(diet_ids))]
+    share = pd.to_numeric(d["Proportion"], errors="coerce") if "Proportion" in d else np.nan
+    out = pd.DataFrame({"diet_id": d["diet_id"], "name": _ingredient_names(d), "share": share})
+    return out.sort_values(["diet_id", "share", "name"], ascending=[True, False, True], na_position="last",
+                           kind="stable").reset_index(drop=True)[cols]
+
+
+def _diet_summary(diet_nutrients: pd.DataFrame, diet_ids) -> tuple[dict, int]:
+    """(mean CP, NDF and starch over the diets' nutrient analyses, in g/kg DM; number of analyses)."""
+    if diet_nutrients.empty or "diet_id" not in diet_nutrients:
+        return {}, 0
+    r = diet_nutrients[diet_nutrients["diet_id"].isin(list(diet_ids))]
+    means = {short: pd.to_numeric(r[col], errors="coerce").mean() for col, short in DIET_SUMMARY if col in r}
+    return {k: float(v) for k, v in means.items() if pd.notna(v)}, len(r)
+
+
+def _diet_summaries(diet_nutrients: pd.DataFrame, diet_ids) -> dict:
+    """{diet id: _diet_summary of that diet alone}, for many diets in one pass."""
+    if diet_nutrients.empty or "diet_id" not in diet_nutrients:
+        return {}
+    r = diet_nutrients[diet_nutrients["diet_id"].isin(list(diet_ids))]
+    cols = [(col, short) for col, short in DIET_SUMMARY if col in r]
+    means = (r[[c for c, _ in cols]].apply(pd.to_numeric, errors="coerce").groupby(r["diet_id"], sort=False).mean()
+             if cols else None)
+    out = {}
+    for did, n in r.groupby("diet_id", sort=False).size().items():
+        nutrients = {} if means is None else {short: float(means.at[did, col]) for col, short in cols
+                                              if pd.notna(means.at[did, col])}
+        out[did] = (nutrients, int(n))
+    return out
+
+
+def study_graph(studies: list, days: pd.DataFrame, animals: pd.DataFrame, diets: pd.DataFrame,
+                diet_nutrients: pd.DataFrame) -> dict:
+    """The selected studies' part of the KG, from the cohort's days.
+
+    studies: id, animals, breeds (the breed, or how many); treatments: study, label, animals, days, additive
+    (only when it says more than the label), diet ids; diets: {id: nutrients (mean CP, NDF, starch), analyses};
+    lines: study, treatment, diet, ingredient name as recorded, share of the diet; names: {name: how many of
+    the studies use it}. An ingredient name is a value in the KG, so the same text in two studies is one node.
+    """
+    out = {"studies": [], "treatments": [], "diets": {}, "lines": [], "names": {}}
+    breed = (animals.drop_duplicates("animal_id").set_index("animal_id")["Breed"]
+             if {"animal_id", "Breed"} <= set(animals.columns) else pd.Series(dtype=object))
+    picked = list(dict.fromkeys(str(x) for x in studies))
+    sid = days["studyId"].astype(str)
+    mask = sid.isin(picked)
+    mine, mine_sid = days[mask], sid[mask]
+    # diets of these studies' treatments, their ingredient lines and nutrient means: looked up once, not per treatment
+    tids = set(mine["treatment_id"].dropna()) if "treatment_id" in mine else set()
+    pairs = [t.loc[t["treatment_id"].isin(tids), ["treatment_id", "diet_id"]]
+             for t in (diets, diet_nutrients) if {"treatment_id", "diet_id"} <= set(t.columns)]
+    pairs = pd.concat(pairs).dropna().drop_duplicates() if pairs else pd.DataFrame(columns=["treatment_id", "diet_id"])
+    diets_of = pairs.groupby("treatment_id", sort=False)["diet_id"].agg(list).to_dict()
+    all_diets = list(dict.fromkeys(pairs["diet_id"]))
+    ingredients_of = {did: list(zip(g["name"], g["share"]))
+                      for did, g in _ingredient_lines(diets, all_diets).groupby("diet_id", sort=False)}
+    summary_of = _diet_summaries(diet_nutrients, all_diets)
+    users: dict[str, set] = {}
+    for s in picked:
+        sd = mine[mine_sid == s]
+        if sd.empty:
+            continue
+        ids = sd["animal_id"].unique()
+        b = breed.reindex(ids).dropna().astype(str).str.strip()
+        kinds = b[(b != "") & (b != UNKNOWN)].value_counts()
+        out["studies"].append({"id": s, "animals": len(ids),
+                               "breeds": kinds.index[0] if len(kinds) == 1 else
+                               (f"{len(kinds)} breeds" if len(kinds) else "")})
+        if "treatment_id" not in sd:
+            continue
+        sd = sd.dropna(subset=["treatment_id"])
+        per = sd.groupby("treatment_id", sort=False)
+        info = pd.DataFrame({"animals": per["animal_id"].nunique(), "days": per.size()})
+        label = (per["Treatment"].first().reindex(info.index) if "Treatment" in sd
+                 else pd.Series(np.nan, index=info.index, dtype=object))
+        info["label"] = label.where(label.notna(), info.index.to_series()).astype(str)
+        add_col = "MethaneInhibitingFeedAdditive"
+        additive = (per[add_col].agg(lambda x: x.dropna().astype(str).str.strip().mode().iloc[0]
+                                     if x.notna().any() else None) if add_col in sd else pd.Series(dtype=object))
+        order = sorted(range(len(info)), key=lambda k: _natural(info["label"].iloc[k]))
+        for tid, row in info.iloc[order].iterrows():
+            add = additive.get(tid)
+            if add is not None and (add == "" or add.lower() == row["label"].strip().lower()):
+                add = None
+            diet_ids = diets_of.get(tid, [])
+            out["treatments"].append({"id": tid, "study": s, "label": row["label"], "animals": int(row["animals"]),
+                                      "days": int(row["days"]), "additive": add, "diets": diet_ids})
+            for did in diet_ids:
+                if did in out["diets"]:
+                    continue
+                nutrients, analyses = summary_of.get(did, ({}, 0))
+                ingredients = ingredients_of.get(did, [])
+                out["diets"][did] = {"nutrients": nutrients, "analyses": analyses, "ingredients": ingredients}
+                for name, share in ingredients:
+                    out["lines"].append({"study": s, "treatment": row["label"], "diet": did, "name": name,
+                                         "share": share})
+                    users.setdefault(name, set()).add(s)
+    out["names"] = {n: len(v) for n, v in users.items()}
+    return out
+
+
+def _natural(text) -> list:
+    """Sort key that puts T2 before T10."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", str(text))]
+
+
+def _share_range(shares: list, unit: str) -> str:
+    """'45%' or '12–45%' over the non-missing shares; '' when none."""
+    s = [float(x) for x in shares if x is not None and pd.notna(x)]
+    if not s:
+        return ""
+    lo, hi = min(s), max(s)
+    return _share_text(lo, unit) if lo == hi else f"{_number(lo)}–{_share_text(hi, unit)}"
+
+
+def studies_dot(g: dict, share_unit: str = "%", max_treatments: int = 6, max_lines: int = 12) -> str:
+    """Graphviz DOT of study_graph(): one box per study with its treatments (at most `max_treatments`) and their
+    diets, each diet listing its ingredients and mean nutrients. Ingredient names that two or more of the
+    studies use get their own node on the right, with one dashed line from each study that uses them (names
+    matched exactly as recorded; shown bold in the diets)."""
+    lines = _dot_start(ranksep=0.5)
+    shared = sorted((n for n, k in g["names"].items() if k > 1), key=lambda n: (-g["names"][n], n.lower()))
+    name_node = {n: f"n{k}" for k, n in enumerate(shared)}
+    edges, links = [], []
+    aqua = KG_GROUPS["diet"][0]
+    for i, s in enumerate(g["studies"]):
+        facts = _count_text("Animal", s["animals"]) + (f" · {s['breeds']}" if s["breeds"] else "")
+        body = [_node(f"s{i}", f"<b>Study {_html(s['id'])}</b><br/>{_small(_html(facts))}", "design", strong=True)]
+        mine = [t for t in g["treatments"] if t["study"] == s["id"]]
+        drawn: dict = {}  # diet id -> its node in this study's box
+        for j, t in enumerate(mine[:max_treatments]):
+            tn = f"s{i}t{j}"
+            days_text = f"{t['days']:,} day" + ("" if t["days"] == 1 else "s")
+            label = (f"<b>Treatment {_html(t['label'])}</b><br/>"
+                     + _small(_html(f"{_count_text('Animal', t['animals'])} · {days_text}")))
+            if t["additive"]:
+                label += "<br/>" + _small(_html(f"additive: {t['additive']}"), 9)
+            if not t["diets"]:
+                label += "<br/>" + _small("<i>no diet recorded</i>", 9, MUTED)
+            body.append(_node(tn, label, "design"))
+            edges.append(f'  "s{i}" -> "{tn}" [dir=back, tooltip="belongsToStudy"];')
+            for did in t["diets"]:
+                if did not in drawn:
+                    drawn[did] = f"s{i}d{len(drawn)}"
+                    body.append(_node(drawn[did], _diet_table(g["diets"][did], share_unit, max_lines, set(shared)),
+                                      "diet"))
+                edges.append(f'  "{tn}" -> "{drawn[did]}" [tooltip="usesDiet"];')
+        more = len(mine) - max_treatments
+        if more > 0:
+            body.append(_node(f"s{i}more", _small(f"+ {more} more treatment" + ("" if more == 1 else "s"), 10, MUTED),
+                              "design", fill="#ffffff"))
+            edges.append(f'  "s{i}" -> "s{i}more" [dir=back, style=dashed];')
+        lines += _cluster(f"study{i}", "", body)
+        # one dashed line from this study's box to each shared name any of its diets use
+        uses: dict = {}
+        for did in dict.fromkeys(d for t in mine for d in t["diets"]):
+            for name, share in g["diets"][did]["ingredients"]:
+                if name in name_node:
+                    entry = uses.setdefault(name, {"tail": None, "diets": set(), "shares": []})
+                    entry["diets"].add(did)
+                    entry["shares"].append(share)
+                    if entry["tail"] is None and did in drawn:
+                        entry["tail"] = drawn[did]
+        fallback = next(iter(drawn.values()), f"s{i}")
+        for name, e in uses.items():
+            k = len(e["diets"])
+            share = _share_range(e["shares"], share_unit)
+            tip = f"Study {s['id']} uses {name} in {k} diet" + ("" if k == 1 else "s") + (f" ({share})" if share else "")
+            links.append(f'  "{e["tail"] or fallback}" -> "{name_node[name]}" [ltail=cluster_study{i}, style=dashed, '
+                         f'color="{aqua}", arrowhead=none, tooltip="{_dot_label(tip)}"];')
+    for n in shared:
+        used_by = _small(f"in {g['names'][n]} studies", 9)
+        lines.append(_node(name_node[n], f"<b>{_html(n)}</b><br/>{used_by}", "diet",
+                           tooltip=f"Ingredient name used by {g['names'][n]} of these studies"))
+    return "\n".join(lines + edges + links + ["}"])
+
+
+# --- one animal ---
+def animal_graph(animal_id, days: pd.DataFrame, animals: pd.DataFrame, diets: pd.DataFrame,
+                 diet_nutrients: pd.DataFrame, unit_visits: dict | None = None) -> dict:
+    """One animal's neighbourhood in the KG, from its cohort days: its study, the treatments its design
+    records point to (with days), each treatment's diet (ingredients with their shares, mean nutrients), its
+    observations by kind (counts) and, if `unit_visits` ({unit id: visits}) is given, its GreenFeed units."""
+    a = days[days["animal_id"] == animal_id]
+    info = animals[animals["animal_id"] == animal_id] if "animal_id" in animals else animals.iloc[0:0]
+    name = info["AnimalIdentifier"].iloc[0] if len(info) and "AnimalIdentifier" in info else animal_id
+
+    def fmt(x):  # 3.0 -> 3
+        return int(x) if isinstance(x, (float, np.floating)) and float(x).is_integer() else x
+
+    facts = [f"{c}: {fmt(info[c].iloc[0])}" for c in ["Breed", "Parity", "DaysInMilk"]
+             if len(info) and c in info and pd.notna(info[c].iloc[0])]
+    treatments = []
+    if "treatment_id" in a and len(a):
+        per = a.dropna(subset=["treatment_id"]).groupby("treatment_id")
+        label = per["Treatment"].first() if "Treatment" in a else pd.Series(dtype=object)
+        for tid, n in per.size().items():
+            ids, lines, records = _cohort_diets(a[a["treatment_id"] == tid], diets, diet_nutrients)
+            ing = _ingredient_lines(diets, ids)
+            nutrients, analyses = _diet_summary(diet_nutrients, ids)
+            treatments.append({"id": tid, "label": label.get(tid, tid), "days": int(n),
+                               "diet_lines": len(lines), "diet_records": len(records),
+                               "ingredients": list(ing[["name", "share"]].itertuples(index=False, name=None)),
+                               "nutrients": nutrients, "analyses": analyses})
+
+    def total(c):
+        return int(pd.to_numeric(a[c], errors="coerce").fillna(0).sum()) if c in a else 0
+
+    obs = {"DesignRecord": total("nDesignRecords"), "MilkObservation": total("nMilkRecords"),
+           "BodyWeightObservation": int(a["BodyWeight"].notna().sum()) if "BodyWeight" in a else 0,
+           "IntakeDayObservation": int(a["DryMatterIntake"].notna().sum()) if "DryMatterIntake" in a else 0,
+           "GreenFeedVisit": total("nVisits")}
+    return {"name": name, "study": a["studyId"].iloc[0] if len(a) else None, "facts": facts,
+            "treatments": treatments, "observations": obs, "units": unit_visits or {}}
+
+
+def _diet_table(t: dict, share_unit: str, max_lines: int, bold=frozenset()) -> str:
+    """HTML-like label of a diet: its ingredients with their shares (names in `bold` drawn bold), then its mean
+    nutrients."""
+    rows = ['<tr><td align="left" colspan="2"><b>Diet</b></td></tr>']
+    for name, share in t["ingredients"][:max_lines]:
+        text = f"<b>{_html(name)}</b>" if name in bold else _html(name)
+        rows.append(f'<tr><td align="left">{_small(text)}</td>'
+                    f'<td align="right">{_small(_html(_share_text(share, share_unit)))}</td></tr>')
+    hidden = len(t["ingredients"]) - max_lines
+    if hidden > 0:
+        rows.append(f'<tr><td align="left" colspan="2">{_small(f"+ {hidden} more", 9, MUTED)}</td></tr>')
+    if t["nutrients"]:
+        text = " · ".join(f"{k} {_number(v)}" for k, v in t["nutrients"].items()) + " g/kg DM"
+        n = t["analyses"]
+        text += f" (mean of {n} analys" + ("is)" if n == 1 else "es)")
+        rows.append(f'<tr><td align="left" colspan="2">{_small(_html(text), 9)}</td></tr>')
+    elif t["analyses"] == 0:
+        rows.append(f'<tr><td align="left" colspan="2">{_small("<i>no nutrient analysis</i>", 9, MUTED)}</td></tr>')
+    return f'<table border="0" cellborder="0" cellspacing="0" cellpadding="1">{"".join(rows)}</table>'
+
+
+def animal_dot(g: dict, share_unit: str = "%", max_lines: int = 12) -> str:
+    """Graphviz DOT of animal_graph(): the animal, its study, its records by kind, its treatments and their
+    diets (ingredients and nutrients) and its GreenFeed units, labelled with the KG link names."""
+    lines = _dot_start()
+    facts = "".join("<br/>" + _small(_html(f)) for f in g["facts"])
+    lines.append(_node("animal", f"<b>Animal {_html(g['name'])}</b>{facts}", "design", strong=True))
+    if g["study"] is not None:
+        lines.append(_node("study", f"<b>Study {_html(g['study'])}</b>", "design"))
+        lines.append('  "animal" -> "study" [label="belongsToStudy"];')
+    for i, (cls, n) in enumerate(g["observations"].items()):
+        if not n:
+            continue
+        lines.append(_node(f"obs{i}", f"<b>{cls}</b><br/>{_small(_html(_count_text(cls, n)))}", KG_CLASSES[cls][0]))
+        lines.append(f'  "obs{i}" -> "animal" [label="aboutAnimal"];')
+        if cls == "DesignRecord":
+            for j, t in enumerate(g["treatments"]):
+                days_text = f"{t['days']:,} day" + ("" if t["days"] == 1 else "s")
+                lines.append(_node(f"trt{j}", f"<b>Treatment {_html(t['label'])}</b><br/>{_small(days_text)}",
+                                   "design"))
+                lines.append(f'  "obs{i}" -> "trt{j}" [label="receivesTreatment"];')
+                if t["diet_lines"] or t["diet_records"]:
+                    lines.append(_node(f"diet{j}", _diet_table(t, share_unit, max_lines), "diet"))
+                    lines.append(f'  "trt{j}" -> "diet{j}" [label="usesDiet"];')
+        if cls == "GreenFeedVisit":
+            for j, (unit, n_unit) in enumerate(sorted(g["units"].items(), key=lambda kv: -kv[1])):
+                short = str(unit).rstrip("/").split("/")[-1]
+                lines.append(_node(f"unit{j}", f"<b>GreenFeedUnit {_html(short)}</b><br/>"
+                                   + _small(f"{n_unit:,} visit" + ("" if n_unit == 1 else "s")), "greenfeed"))
+                lines.append(f'  "obs{i}" -> "unit{j}" [label="recordedBy"];')
+    return "\n".join(lines + ["}"])

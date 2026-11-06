@@ -1,6 +1,6 @@
 streamlit>=1.56.0
 pandas>=2.1.0,<3
-plotly>=5.18.0
+plotly>=5.19.0
 statsmodels>=0.14.0
 openai>=1.30.0
 azure-data-tables>=12.5.0
