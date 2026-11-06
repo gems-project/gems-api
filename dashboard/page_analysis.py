@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -31,8 +32,12 @@ from gems_analysis import (  # noqa: E402
     CALCULATED,
     FACETS,
     HAS,
+    RULES_DEFAULT,
     UNKNOWN,
+    VISIT_PRESETS,
+    active_visit_steps,
     animal_period_means,
+    apply_daily_gases,
     box_stats,
     calculated_dictionary,
     calculated_labels,
@@ -42,6 +47,7 @@ from gems_analysis import (  # noqa: E402
     facet_counts,
     facet_masks,
     load_dataset,
+    load_visits,
     numeric_columns,
     plot_sample,
     robust_outliers,
@@ -51,6 +57,9 @@ from gems_analysis import (  # noqa: E402
     synthetic_dir,
     treatment_effects,
     variance_shares,
+    visit_attrition,
+    visit_rules_result,
+    visit_step_label,
 )
 from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_downloads import log_download  # noqa: E402
@@ -218,9 +227,10 @@ def timeline_figure(tl: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def show(fig: go.Figure, height: int) -> None:
-    fig.update_layout(height=height, margin={"l": 8, "r": 8, "t": 28, "b": 8}, font={"size": 12},
-                      legend={"orientation": "h", "y": 1.0, "yanchor": "bottom", "x": 0, "title_text": ""})
+def show(fig: go.Figure, height: int, top: int = 28, legend_y: float = 1.0) -> None:
+    """Common layout; panels with their own titles need a larger `top` and a higher `legend_y`."""
+    fig.update_layout(height=height, margin={"l": 8, "r": 8, "t": top, "b": 8}, font={"size": 12},
+                      legend={"orientation": "h", "y": legend_y, "yanchor": "bottom", "x": 0, "title_text": ""})
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -233,6 +243,8 @@ if synthetic_dir():
     st.warning("Synthetic test data: every value is invented. This is not GEMS data.", icon="🧪")
 if st.sidebar.button("Reload data", help="Load the kg_v1 tables again, e.g. after the KG job has run."):
     load_dataset.clear()
+    load_visits.clear()
+    visit_rules_result.clear()
     st.rerun()
 
 try:
@@ -327,6 +339,22 @@ cohort_animals = set(cdays["animal_id"])
 st.sidebar.markdown(f"**{len(cohort_studies)}** studies · **{len(cohort_animals):,}** animals · "
                     f"**{len(cdays):,}** animal-days")
 
+# GreenFeed visit rules (set in the QC tab) decide which visits make each day's CH4, for every tab.
+QC_KEYS = {rule: f"qc_{rule}" for rule in RULES_DEFAULT}
+visit_rules = {rule: st.session_state.get(key, RULES_DEFAULT[rule]) for rule, key in QC_KEYS.items()}
+rules_on = bool(active_visit_steps(visit_rules))
+preset_name = st.session_state.get("qc_preset_name", next(iter(VISIT_PRESETS)))
+rules_edited = visit_rules != {**RULES_DEFAULT, **VISIT_PRESETS[preset_name][0]}
+if rules_on and not cdays.empty:
+    try:
+        rules_result = visit_rules_result(source, tuple(sorted(visit_rules.items())))
+        cdays = cdays.copy(deep=False)  # the cohort's own frame; the shared cached days stay as they are
+        apply_daily_gases(cdays, rules_result["daily"])
+    except Exception as exc:  # noqa: BLE001
+        st.sidebar.error(f"The GreenFeed visit rules could not be applied: {exc}")
+st.sidebar.caption(f"GreenFeed visit rules: **{preset_name}**" + (" (edited)" if rules_edited else "")
+                   + ". Change them in the GreenFeed QC tab.")
+
 recipe = {
     "source": source,
     "made": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -336,7 +364,8 @@ recipe = {
     "dateFrom": str(date_from) if date_from else None,
     "dateTo": str(date_to) if date_to else None,
     "result": {"studies": cohort_studies, "animals": len(cohort_animals), "animalDays": len(cdays)},
-    "calculatedColumns": {c: f"{how} [{unit}]" for c, (_, unit, how, _) in CALCULATED.items()
+    "visitRules": {"preset": preset_name, "edited": rules_edited, **visit_rules},
+    "calculatedColumns":{c: f"{how} [{unit}]" for c, (_, unit, how, _) in CALCULATED.items()
                           if c in cdays and cdays[c].notna().any()},
 }
 
@@ -348,7 +377,7 @@ if cdays.empty:
 # Streamlit forgets the value of a widget that is not drawn, so the tabs' widget values are saved again
 # here: your choices are still there when you come back to a tab.
 TAB_WIDGETS = ["ov_study", "m_response", "m_level", "m_covariates", "m_screen", "m_screen_cols", "m_within",
-               "m_threshold", "m_reference"]
+               "m_threshold", "m_reference", "qc_study", "qc_animals", *QC_KEYS.values()]
 for _k in TAB_WIDGETS:
     if _k in st.session_state:
         st.session_state[_k] = st.session_state[_k]
@@ -366,7 +395,8 @@ def keep(key: str, default, options=None, multi: bool = False) -> None:
             st.session_state[key] = default
 
 
-tab_overview, tab_model, tab_export = st.tabs(["Overview", "Model", "Export"], key="analysis_tab", on_change="rerun")
+tab_overview, tab_qc, tab_model, tab_export = st.tabs(["Overview", "GreenFeed QC", "Model", "Export"],
+                                                      key="analysis_tab", on_change="rerun")
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +412,7 @@ def render_overview() -> None:
         ("Animals", f"{len(cohort_animals):,}", f"of {len(animals):,}"),
         ("Animal-days", f"{len(cdays):,}", "any measurement or design record"),
         ("CH4 days", f"{ch4_days:,}", "days with a GreenFeed CH4 mean"),
-        ("GreenFeed visits", f"{visits:,}", "matched to animals, CH4 > 0"),
+        ("GreenFeed visits", f"{visits:,}", "kept by the visit rules" if rules_on else "matched to animals, CH4 > 0"),
         ("Date span", f"{cdays['Date'].min():%Y-%m} → {cdays['Date'].max():%Y-%m}", ""),
     ])
 
@@ -419,6 +449,181 @@ def render_overview() -> None:
             hovertemplate="Animal %{y}<br>%{x|%Y-%m-%d}<br>Visits: %{z}<br>Treatment: %{customdata}<extra></extra>"))
         heat.update_yaxes(type="category", title=None, autorange="reversed")
         show(heat, min(900, max(260, 16 * len(z) + 70)))
+
+
+# ---------------------------------------------------------------------------
+# GreenFeed QC: the visit rules, what they remove, and each animal's CH4 record
+# ---------------------------------------------------------------------------
+REASON_COLORS = [SERIES[1], SERIES[3], SERIES[4], SERIES[6], SERIES[7], SERIES[2], SERIES[5], OTHER]
+
+
+def _apply_visit_preset() -> None:
+    name = st.session_state.get("qc_preset_pick")
+    if not name:
+        return
+    for rule, value in {**RULES_DEFAULT, **VISIT_PRESETS[name][0]}.items():
+        st.session_state[f"qc_{rule}"] = value
+    st.session_state["qc_preset_name"] = name
+    st.session_state["qc_preset_pick"] = None
+
+
+def attrition_figure(att: pd.DataFrame) -> go.Figure:
+    """Visits left after each rule, the starting count at the top."""
+    text = [f"{v:,}" + (f"  (−{r:,})" if r else "") for v, r in zip(att["visits"], att["removed"])]
+    fig = go.Figure(go.Bar(x=att["visits"], y=att["step"], orientation="h", text=text, textposition="auto",
+                           marker_color=[OTHER] + [SERIES[0]] * (len(att) - 1),
+                           hovertemplate="%{y}<br>%{x:,} visits left<extra></extra>"))
+    fig.update_yaxes(autorange="reversed", title=None, type="category")
+    fig.update_xaxes(title="Visits left")
+    return fig
+
+
+def record_figure(rec: pd.DataFrame, daily_rec: pd.DataFrame, order: list[str], reasons: list[str]) -> go.Figure:
+    """One panel per animal: each visit's CH4 over time, coloured kept / by the first rule that removed it,
+    and the daily mean of the kept visits as a line."""
+    cols = min(3, len(order))
+    rows = int(np.ceil(len(order) / cols))
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=order, horizontal_spacing=0.06,
+                        vertical_spacing=min(0.12, 0.5 / rows))
+    colors = {"Kept": SERIES[0], **{r: REASON_COLORS[i % len(REASON_COLORS)] for i, r in enumerate(x for x in reasons if x != "Kept")}}
+    shown: set[str] = set()
+    for i, animal in enumerate(order):
+        r, c = i // cols + 1, i % cols + 1
+        part = rec[rec["animal"] == animal]
+        for reason in reasons:
+            sub = part[part["reason"] == reason]
+            if sub.empty:
+                continue
+            fig.add_trace(go.Scatter(x=sub["start"], y=sub["CH4_g_d"], mode="markers", name=reason, legendgroup=reason,
+                                     showlegend=reason not in shown,
+                                     marker={"color": colors[reason], "size": 5, "opacity": 0.8 if reason == "Kept" else 0.6},
+                                     hovertemplate="%{x|%Y-%m-%d %H:%M}<br>%{y:.0f} g/d<extra>" + reason + "</extra>"),
+                          row=r, col=c)
+            shown.add(reason)
+        d = daily_rec[daily_rec["animal"] == animal].sort_values("Date")
+        if not d.empty:
+            fig.add_trace(go.Scatter(x=d["Date"] + pd.Timedelta(hours=12), y=d["CH4_g_d"], mode="lines",
+                                     name="Daily mean of kept visits", legendgroup="daily",
+                                     showlegend="daily" not in shown, line={"color": SEQ[6], "width": 1.5},
+                                     hovertemplate="%{x|%Y-%m-%d}: %{y:.0f} g/d<extra>daily mean</extra>"),
+                          row=r, col=c)
+            shown.add("daily")
+    fig.update_yaxes(title_text="CH4 (g/d)", col=1)
+    return fig
+
+
+def render_qc() -> None:
+    heading("GreenFeed visit rules", "Which GreenFeed visits count when each day's CH4 is calculated. The rules "
+            "apply to every tab: the Overview counts, the Model tab, the calculated variables (methane yield, Ym, …) "
+            "and the Export all use the daily CH4 they give. With no rules, daily CH4 is the mean of every visit "
+            "matched to the animal.")
+    st.pills("Start from", list(VISIT_PRESETS), key="qc_preset_pick", on_change=_apply_visit_preset)
+    st.caption(f"**{preset_name}**" + (" (edited below)" if rules_edited else "") + ": " + VISIT_PRESETS[preset_name][1])
+    c1, c2, c3 = st.columns(3, gap="large")
+    with c1:
+        st.markdown("**Each visit**")
+        keep("qc_exclude_phases", False)
+        st.toggle("Leave out adaptation, transition and washout days", key="qc_exclude_phases",
+                  help="Uses each day's experimental phase as the contributor recorded it.")
+        keep("qc_min_minutes", 0.0)
+        st.number_input("Minimum good-data time (min)", min_value=0.0, max_value=15.0, step=0.5, key="qc_min_minutes",
+                        help="0 = off. C-Lock and the Global Research Alliance SOPs ask for at least 2 minutes.")
+        keep("qc_drop_interrupted", False)
+        st.toggle("Leave out interrupted visits", key="qc_drop_interrupted",
+                  help="Visits whose interrupted flag cannot be read are kept.")
+        keep("qc_min_airflow", 0.0)
+        st.number_input("Minimum airflow (L/s)", min_value=0.0, max_value=200.0, step=1.0, key="qc_min_airflow",
+                        help="0 = off. Beck et al. (2024) left out visits below 26 L/s. Visits without airflow are kept.")
+        keep("qc_max_ch4", 0.0)
+        st.number_input("Maximum CH4 (g/d)", min_value=0.0, max_value=3000.0, step=50.0, key="qc_max_ch4",
+                        help="0 = off.")
+    with c2:
+        st.markdown("**Each animal's visits**")
+        keep("qc_mad_k", 0.0)
+        st.number_input("Outliers: robust z above", min_value=0.0, max_value=10.0, step=0.5, key="qc_mad_k",
+                        help="0 = off. Per animal: |CH4 − median| / (1.4826 × MAD) over the visits still kept; "
+                             "animals with fewer than 5 visits are not screened.")
+        keep("qc_min_visits_day", 1)
+        st.number_input("Minimum visits per day", min_value=1, max_value=20, step=1, key="qc_min_visits_day")
+    with c3:
+        st.markdown("**Each animal and period**")
+        keep("qc_min_days", 0)
+        st.number_input("Minimum days with visits", min_value=0, max_value=100, step=1, key="qc_min_days",
+                        help="Per animal, treatment and period. 0 = off.")
+        keep("qc_min_visits", 0)
+        st.number_input("Minimum visits", min_value=0, max_value=500, step=1, key="qc_min_visits",
+                        help="Per animal, treatment and period. 0 = off. Beck et al. (2024): 30 visits of 3 min or more.")
+        keep("qc_min_bins", 0)
+        st.number_input("Minimum 3-hour periods of the day covered (of 8)", min_value=0, max_value=8, step=1,
+                        key="qc_min_bins", help="Spreads the visits over the day, since CH4 changes with time since "
+                                                "feeding. 0 = off.")
+
+    try:
+        visits = load_visits(source)
+        result = visit_rules_result(source, tuple(sorted(visit_rules.items())))
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not load the GreenFeed visits from {source}: {exc}")
+        return
+    in_cohort = visits["animal_id"].isin(cohort_animals)
+    if date_from is not None:
+        in_cohort &= visits["Date"] >= pd.Timestamp(date_from)
+    if date_to is not None:
+        in_cohort &= visits["Date"] <= pd.Timestamp(date_to)
+    in_cohort = in_cohort.to_numpy()
+    if not in_cohort.any():
+        st.info("The cohort has no GreenFeed visits matched to its animals.")
+        return
+    att = visit_attrition(visits, result["status"], visit_rules, in_cohort)
+    first, last = att.iloc[0], att.iloc[-1]
+    tiles([
+        ("Visits kept", f"{last['visits']:,}", f"of {first['visits']:,} ({last['visits'] / first['visits']:.0%})"),
+        ("Animal-days with CH4", f"{last['animal_days']:,}", f"of {first['animal_days']:,}"),
+        ("Animals with CH4", f"{last['animals']:,}", f"of {first['animals']:,}"),
+    ])
+    heading("What each rule removes", "Visits left after each rule, in the order the rules are applied; the "
+            "cohort's visits only. Rules for days and for animal-periods remove all of a day's or period's visits.")
+    show(attrition_figure(att), 70 + 40 * len(att))
+    with st.expander("Attrition table"):
+        st.dataframe(att.rename(columns={"step": "Step", "visits": "Visits left", "removed": "Removed",
+                                         "animal_days": "Animal-days left", "animals": "Animals left"}),
+                     hide_index=True, use_container_width=True)
+
+    heading("CH4 record by animal", "Each visit's CH4 over time: blue visits are kept, other colours show the "
+            "first rule that removed the visit. The dark line is the daily mean of the kept visits.")
+    studies_with_visits = sorted(pd.unique(visits.loc[in_cohort, "studyId"]), key=str)
+    s1, s2 = st.columns([1, 3], gap="medium")
+    keep("qc_study", studies_with_visits[0], studies_with_visits)
+    study = s1.selectbox("Study", studies_with_visits, key="qc_study")
+    in_study = in_cohort & (visits["studyId"] == study).to_numpy()
+    by_visits = visits.loc[in_study, "animal_id"].value_counts()
+    names = animals_t.set_index("animal_id")["AnimalIdentifier"].astype(str).to_dict() \
+        if {"animal_id", "AnimalIdentifier"} <= set(animals_t.columns) else {}
+    options = by_visits.index.tolist()
+    keep("qc_animals", options[:3], options, multi=True)
+    chosen = s2.multiselect("Animals (most visits first; up to 6)", options, key="qc_animals", max_selections=6,
+                            format_func=lambda a: f"{names.get(a, a)} ({by_visits[a]:,} visits)")
+    if not chosen:
+        st.caption("Pick one or more animals to see their visits.")
+        return
+    label = {a: names.get(a, str(a)) for a in chosen}
+    if len(set(label.values())) < len(label):  # the same identifier twice: add the KG id's end to tell them apart
+        label = {a: f"{names.get(a, a)} ({str(a)[-6:]})" for a in chosen}
+    rows = np.flatnonzero(in_study & visits["animal_id"].isin(chosen).to_numpy())
+    reason_names = {code: visit_step_label(code, visit_rules) for code in [0] + active_visit_steps(visit_rules)}
+    rec = visits.iloc[rows][["animal_id", "start", "CH4_g_d"]].assign(
+        reason=[reason_names[int(s)] for s in result["status"][rows]])
+    rec["animal"] = rec["animal_id"].map(label)
+    daily_rec = result["daily"].reset_index()
+    daily_rec = daily_rec[daily_rec["animal_id"].isin(chosen)]
+    if date_from is not None:
+        daily_rec = daily_rec[daily_rec["Date"] >= pd.Timestamp(date_from)]
+    if date_to is not None:
+        daily_rec = daily_rec[daily_rec["Date"] <= pd.Timestamp(date_to)]
+    daily_rec = daily_rec.assign(animal=daily_rec["animal_id"].map(label))
+    order = [label[a] for a in chosen]
+    n_rows = int(np.ceil(len(order) / 3))
+    show(record_figure(rec, daily_rec, order, list(reason_names.values())), 280 * n_rows + 110, top=80,
+         legend_y=1 + 55 / (280 * n_rows))  # legend above the animals' titles
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +849,9 @@ def render_tables() -> None:
 if tab_overview.open:
     with tab_overview:
         render_overview()
+if tab_qc.open:
+    with tab_qc:
+        render_qc()
 if tab_model.open:
     with tab_model:
         render_model()

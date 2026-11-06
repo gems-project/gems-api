@@ -14,6 +14,7 @@ per cow-day (methane yield, FPCM, nutrient intakes, ...; see CALCULATED), which 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -434,20 +435,21 @@ def add_calculated(days: pd.DataFrame, diet_nutrients: pd.DataFrame) -> pd.DataF
     def col(name: str) -> pd.Series:
         return pd.to_numeric(out[name], errors="coerce") if name in out else blank
 
-    ch4, dmi = _positive(col("CH4_g_d")), _positive(col("DryMatterIntake"))
+    dmi = _positive(col("DryMatterIntake"))
     milk, bw = _positive(col("MilkProduction")), _positive(col("BodyWeight"))
     fat, protein = col("MilkFat"), col("MilkProtein")
 
-    out["MethaneYield"] = ch4 / dmi
-    out["MethaneIntensityMilk"] = ch4 / milk
+    # Columns that use CH4 are filled by update_methane_columns at the end (placeholders keep their order).
+    out["MethaneYield"] = np.nan
+    out["MethaneIntensityMilk"] = np.nan
     fpcm = milk * (0.1226 * fat + 0.0722 * protein + 0.2534)
     out["FPCM"] = fpcm
-    out["MethaneIntensityFPCM"] = ch4 / _positive(fpcm)
+    out["MethaneIntensityFPCM"] = np.nan
     out["MilkFatYield"] = milk * fat / 100
     out["MilkProteinYield"] = milk * protein / 100
     out["FeedEfficiency"] = fpcm / dmi
     out["ForageShare"] = col("ForageIntake") / dmi * 100
-    out["MethanePerMetabolicBW"] = ch4 / bw ** 0.75
+    out["MethanePerMetabolicBW"] = np.nan
     out["DMIPercentBW"] = dmi / bw * 100
 
     # Diet: each day's treatment -> the average composition of that treatment's diet.
@@ -470,8 +472,23 @@ def add_calculated(days: pd.DataFrame, diet_nutrients: pd.DataFrame) -> pd.DataF
     out["GrossEnergyIntakeAll"] = ge
     out["GrossEnergyIntakeSource"] = np.where(recorded.notna(), "recorded",
                                               np.where(from_diet.notna(), "from diet", None))
-    out["Ym"] = ch4 * CH4_MJ_PER_G / _positive(ge) * 100
+    update_methane_columns(out)
     return out
+
+
+def update_methane_columns(df: pd.DataFrame) -> None:
+    """(Re)calculate, in place, the variables that use daily CH4: methane yield, the two intensities, CH4 per
+    metabolic body weight and Ym. Called by add_calculated, and again when the GreenFeed visit rules change
+    daily CH4. `df` must be a frame of its own, never one shared through the cache."""
+    def num(name: str) -> pd.Series:
+        return pd.to_numeric(df[name], errors="coerce") if name in df else pd.Series(np.nan, index=df.index)
+
+    ch4 = _positive(num("CH4_g_d"))
+    df["MethaneYield"] = ch4 / _positive(num("DryMatterIntake"))
+    df["MethaneIntensityMilk"] = ch4 / _positive(num("MilkProduction"))
+    df["MethaneIntensityFPCM"] = ch4 / _positive(num("FPCM"))
+    df["MethanePerMetabolicBW"] = ch4 / _positive(num("BodyWeight")) ** 0.75
+    df["Ym"] = ch4 * CH4_MJ_PER_G / _positive(num("GrossEnergyIntakeAll")) * 100
 
 
 def calculated_labels() -> dict[str, str]:
@@ -488,3 +505,242 @@ def calculated_dictionary() -> pd.DataFrame:
                  "derivedFrom": "calculated in the Analysis page: 'recorded' or 'from diet' for GrossEnergyIntakeAll",
                  "termLabel": "Source of gross energy intake"})
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# GreenFeed visit rules (QC tab): which visits count when daily CH4 is calculated
+# ---------------------------------------------------------------------------
+VISIT_COLUMNS = ["studyId", "animal_id", "Start_Time", "End_Time", "goodDataSeconds", "Good_Data_Duration",
+                 "CH4_Massflow_g_d", "CO2_Massflow_g_d", "O2_Massflow_g_d", "H2_Massflow_g_d",
+                 "Average_Airflow_L_s", "Was_Interrupted"]
+VISIT_GASES = {"CH4_Massflow_g_d": "CH4_g_d", "CO2_Massflow_g_d": "CO2_g_d", "O2_Massflow_g_d": "O2_g_d",
+               "H2_Massflow_g_d": "H2_g_d"}
+DAILY_COLUMNS = ["CH4_g_d", "CO2_g_d", "O2_g_d", "H2_g_d", "nVisits"]
+NO_READING = -999  # GreenFeed exports write -999 for a gas they could not measure
+NON_MEASUREMENT = re.compile(r"adapt|adpat|transition|wash", re.IGNORECASE)  # "adpat" is a typo found in the data
+
+# A rule that is 0 or False is off. With every rule off, daily CH4 is what the KG job publishes in kgAnimalDay:
+# the mean of every matched visit with a CH4 reading.
+RULES_DEFAULT = {"exclude_phases": False, "min_minutes": 0.0, "drop_interrupted": False, "min_airflow": 0.0,
+                 "max_ch4": 0.0, "mad_k": 0.0, "min_visits_day": 1, "min_days": 0, "min_visits": 0, "min_bins": 0}
+VISIT_PRESETS = {
+    "Every matched visit": ({}, "No rules: every visit matched to an animal with a CH4 reading (what the KG job "
+                                "publishes as daily CH4)."),
+    "C-Lock minimum": ({"min_minutes": 2.0}, "At least 2 minutes of good data per visit (C-Lock GreenFeed SOP; "
+                                             "Global Research Alliance GreenFeed SOP)."),
+    "Common practice": ({"exclude_phases": True, "min_minutes": 2.0, "drop_interrupted": True, "mad_k": 3.5,
+                         "min_days": 7, "min_visits": 20, "min_bins": 6},
+                        "A combination often used with GreenFeed data (as in the GEMS kg_map workbench), not one "
+                        "published standard: measurement days only, visits of 2 min or more, no interrupted visits, "
+                        "no per-animal outliers, and at least 7 days, 20 visits and 6 of the 8 three-hour periods "
+                        "of the day per animal and period."),
+    "Beck et al. 2024": ({"min_minutes": 3.0, "min_airflow": 26.0, "max_ch4": 500.0, "min_visits": 30},
+                         "Beck et al. (2024, J Anim Sci 102:skae158): visits of 3 min or more, airflow of at least "
+                         "26 L/s, CH4 at most 500 g/d (their limit for steers), and at least 30 visits per animal "
+                         "(here: per animal and period)."),
+}
+# Why a visit was left out: the first rule it failed, in the order the rules are applied (0 = kept).
+VISIT_STEPS = {1: "exclude_phases", 2: "min_minutes", 3: "drop_interrupted", 4: "min_airflow", 5: "max_ch4",
+               6: "mad_k", 7: "min_visits_day", 8: "segment"}
+
+
+def visit_step_label(code: int, rules: dict) -> str:
+    r = {**RULES_DEFAULT, **rules}
+    return {0: "Kept",
+            1: "Adaptation, transition or washout day",
+            2: f"Shorter than {r['min_minutes']:g} min",
+            3: "Interrupted visit",
+            4: f"Airflow below {r['min_airflow']:g} L/s",
+            5: f"CH4 above {r['max_ch4']:g} g/d",
+            6: f"Outlier for its animal (robust z > {r['mad_k']:g})",
+            7: f"Day with fewer than {r['min_visits_day']} visits",
+            8: "Animal-period below the minimum days, visits or times of day"}[code]
+
+
+def active_visit_steps(rules: dict) -> list[int]:
+    r = {**RULES_DEFAULT, **rules}
+    on = {1: r["exclude_phases"], 2: r["min_minutes"] > 0, 3: r["drop_interrupted"], 4: r["min_airflow"] > 0,
+          5: r["max_ch4"] > 0, 6: r["mad_k"] > 0, 7: r["min_visits_day"] > 1,
+          8: r["min_days"] > 0 or r["min_visits"] > 0 or r["min_bins"] > 0}
+    return [code for code, is_on in on.items() if is_on]
+
+
+def _as_bool(s: pd.Series | None, index) -> pd.Series:
+    """True / False / missing from booleans or text ("true", "1", "yes", ...). Anything else is missing."""
+    if s is None:
+        return pd.Series(np.nan, index=index, dtype=object)
+    t = s.astype(str).str.strip().str.lower()
+    out = pd.Series(np.nan, index=s.index, dtype=object)
+    out[t.isin(["true", "1", "1.0", "yes", "y", "t"])] = True
+    out[t.isin(["false", "0", "0.0", "no", "n", "f"])] = False
+    return out
+
+
+def _seconds(text: pd.Series) -> pd.Series:
+    """'hh:mm:ss' -> seconds."""
+    hms = text.astype(str).str.extract(r"^(\d+):(\d{2}):(\d{2})$").astype(float)
+    return hms[0] * 3600 + hms[1] * 60 + hms[2]
+
+
+def prepare_visits(raw: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
+    """Matched GreenFeed visits with a CH4 reading, one row each, ready for the rules: start time, minutes of
+    good data, the four gases (-999 left out), airflow, the interrupted flag, and from that animal's day its
+    treatment, period and experimental phase. Integer codes for the animal, the day and the animal-period
+    (animal x treatment x period) make the rules fast."""
+    idx = raw.index
+    start = pd.to_datetime(raw["Start_Time"], errors="coerce") if "Start_Time" in raw else pd.Series(pd.NaT, index=idx)
+    v = pd.DataFrame({"studyId": raw["studyId"].astype(str), "animal_id": raw["animal_id"], "start": start,
+                      "Date": start.dt.normalize()})
+    secs = pd.to_numeric(raw["goodDataSeconds"], errors="coerce") if "goodDataSeconds" in raw else pd.Series(np.nan, index=idx)
+    missing = secs.isna()  # fall back to the text duration, then to end - start, only where needed (parsing is slow)
+    if missing.any() and "Good_Data_Duration" in raw:
+        secs[missing] = _seconds(raw.loc[missing, "Good_Data_Duration"])
+        missing = secs.isna()
+    if missing.any() and "End_Time" in raw:
+        secs[missing] = (pd.to_datetime(raw.loc[missing, "End_Time"], errors="coerce") - start[missing]).dt.total_seconds()
+    v["minutes"] = secs / 60
+    for src, dst in VISIT_GASES.items():
+        x = pd.to_numeric(raw[src], errors="coerce") if src in raw else pd.Series(np.nan, index=idx)
+        v[dst] = x.where(x != NO_READING)
+    v["airflow"] = pd.to_numeric(raw["Average_Airflow_L_s"], errors="coerce") if "Average_Airflow_L_s" in raw else np.nan
+    v["interrupted"] = _as_bool(raw.get("Was_Interrupted"), idx).map({True: 1.0, False: 0.0}).astype(float)  # 1 / 0 / blank
+    v = v[v["animal_id"].notna() & v["start"].notna() & (v["CH4_g_d"] > 0)]
+    info_cols = [c for c in ["Treatment", "Period", "ExperimentalPhase"] if c in days]
+    if not days.empty:
+        info = days[["animal_id", "Date"] + info_cols].drop_duplicates(["animal_id", "Date"])
+        v = v.merge(info, on=["animal_id", "Date"], how="left")
+    for c in ["Treatment", "Period", "ExperimentalPhase"]:
+        if c not in v:
+            v[c] = np.nan
+    v["non_measurement"] = v["ExperimentalPhase"].notna() & v["ExperimentalPhase"].astype(str).str.contains(NON_MEASUREMENT)
+    v["hour_bin"] = (v["start"].dt.hour // 3).astype("int8")  # 8 three-hour periods of the day
+    v = v.sort_values(["animal_id", "start"], kind="stable").reset_index(drop=True)
+    v["_animal"] = pd.factorize(v["animal_id"])[0]
+    v["_day"] = v.groupby(["animal_id", "Date"], sort=False).ngroup()
+    v["_segment"] = v.groupby(["animal_id", "Treatment", "Period"], sort=False, dropna=False).ngroup()
+    return v.drop(columns=["Treatment", "Period", "ExperimentalPhase"])  # only needed for the codes above
+
+
+def run_visit_rules(v: pd.DataFrame, rules: dict) -> dict:
+    """Apply the rules in order. Returns `status` (per visit: 0 = kept, else the VISIT_STEPS code of the first
+    rule that left it out) and `daily` (per animal and day: mean of the kept visits' gases, and how many).
+
+    A rule that cannot be checked for a visit (no airflow recorded, interrupted flag unreadable) does not remove
+    it. The per-animal outlier screen uses the visits still kept at that point and needs at least 5 of them.
+    """
+    r = {**RULES_DEFAULT, **rules}
+    n = len(v)
+    status = np.zeros(n, dtype=np.int8)
+    keep = np.ones(n, dtype=bool)
+
+    def drop(fails: np.ndarray, code: int) -> None:
+        hit = keep & fails
+        status[hit] = code
+        keep[hit] = False
+
+    if n:
+        if r["exclude_phases"]:
+            drop(v["non_measurement"].to_numpy(dtype=bool), 1)
+        if r["min_minutes"] > 0:
+            drop((v["minutes"] < r["min_minutes"]).to_numpy(), 2)
+        if r["drop_interrupted"]:
+            drop(v["interrupted"].eq(1.0).to_numpy(), 3)
+        if r["min_airflow"] > 0:
+            drop((v["airflow"] < r["min_airflow"]).to_numpy(), 4)
+        if r["max_ch4"] > 0:
+            drop((v["CH4_g_d"] > r["max_ch4"]).to_numpy(), 5)
+        if r["mad_k"] > 0:
+            x = v["CH4_g_d"].where(keep)
+            g = x.groupby(v["_animal"])
+            med = g.transform("median")
+            mad = (x - med).abs().groupby(v["_animal"]).transform("median")
+            z = (x - med).abs() / (MAD_SCALE * mad.replace(0, np.nan))
+            drop(((z > r["mad_k"]) & (g.transform("count") >= 5)).to_numpy(), 6)
+        day = v["_day"].to_numpy()
+        if r["min_visits_day"] > 1:
+            per_day = np.bincount(day[keep], minlength=day.max() + 1)
+            drop(per_day[day] < r["min_visits_day"], 7)
+        if r["min_days"] > 0 or r["min_visits"] > 0 or r["min_bins"] > 0:
+            seg = v["_segment"].to_numpy()
+            n_seg = seg.max() + 1
+            visits = np.bincount(seg[keep], minlength=n_seg)
+            day_seg = np.zeros(day.max() + 1, dtype=np.int64)
+            day_seg[day] = seg
+            days_ = np.bincount(day_seg[np.unique(day[keep])], minlength=n_seg)
+            seg_bin = np.unique(seg[keep].astype(np.int64) * 8 + v["hour_bin"].to_numpy()[keep])
+            bins = np.bincount(seg_bin // 8, minlength=n_seg)
+            ok = (days_ >= r["min_days"]) & (visits >= r["min_visits"]) & (bins >= r["min_bins"])
+            drop(~ok[seg], 8)
+    kept = v[keep]
+    g = kept.groupby(["animal_id", "Date"], sort=False)
+    daily = g[["CH4_g_d", "CO2_g_d", "O2_g_d", "H2_g_d"]].mean()
+    daily["nVisits"] = g.size()
+    return {"status": status, "daily": daily}
+
+
+def visit_attrition(v: pd.DataFrame, status: np.ndarray, rules: dict, cohort: np.ndarray | None = None) -> pd.DataFrame:
+    """Visits, animal-days and animals left after each active rule (in the order applied), for the cohort's
+    visits (`cohort`: True for visits of the selected animals and dates)."""
+    cohort = np.ones(len(v), dtype=bool) if cohort is None else np.asarray(cohort, dtype=bool)
+    day, animal = v["_day"].to_numpy(), v["_animal"].to_numpy()
+    n_day, n_animal = (int(day.max()) + 1, int(animal.max()) + 1) if len(v) else (0, 0)
+    rows, previous = [], None
+    for code in [0] + active_visit_steps(rules):
+        left = cohort & ((status == 0) | (status > code)) if code else cohort
+        visits = int(left.sum())
+        rows.append({"step": "Matched visits with a CH4 reading" if code == 0 else visit_step_label(code, rules),
+                     "visits": visits, "removed": 0 if previous is None else previous - visits,
+                     # distinct days / animals among the visits left (counting beats sorting on ~1M visits)
+                     "animal_days": int(np.count_nonzero(np.bincount(day[left], minlength=n_day))),
+                     "animals": int(np.count_nonzero(np.bincount(animal[left], minlength=n_animal)))})
+        previous = visits
+    return pd.DataFrame(rows)
+
+
+def apply_daily_gases(days: pd.DataFrame, daily: pd.DataFrame) -> None:
+    """Replace, in place, the daily gas means and visit counts of `days` (a frame of its own, e.g. the cohort)
+    with those from the visit rules, and recalculate the variables that use CH4. Days without a kept visit get
+    no gas values."""
+    aligned = daily.reindex(pd.MultiIndex.from_arrays([days["animal_id"], days["Date"]]))
+    for c in DAILY_COLUMNS:
+        days[c] = aligned[c].to_numpy() if c in aligned else np.nan
+    update_methane_columns(days)
+
+
+def _read_visits_synthetic(d: Path) -> pd.DataFrame:
+    v = _read_synthetic(d, "kgVisit")
+    if v.empty:
+        return v
+    if "matchOk" in v:
+        v = v[v["matchOk"].astype(str).str.lower() == "true"]
+    return v[[c for c in VISIT_COLUMNS if c in v]]
+
+
+def _read_visits_databricks() -> pd.DataFrame:
+    from gems_data import _connect  # imported here so synthetic mode never touches Databricks
+
+    catalog = os.environ.get("GEMS_CATALOG", "gems_catalog").strip()
+    schema = os.environ.get("GEMS_KG_SCHEMA", "kg_v1").strip()
+    table = f"`{catalog}`.`{schema}`.`kgVisit`"
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {table} LIMIT 0")
+        names = [d[0] for d in cur.description]
+        cols = ", ".join(f"`{c}`" for c in VISIT_COLUMNS if c in names)
+        where = "WHERE matchOk = true AND animal_id IS NOT NULL" if "matchOk" in names else "WHERE animal_id IS NOT NULL"
+        cur.execute(f"SELECT {cols} FROM {table} {where}")
+        return cur.fetchall_arrow().to_pandas()
+
+
+@st.cache_resource(ttl=12 * 3600, show_spinner="Loading GreenFeed visits…")
+def load_visits(source: str) -> pd.DataFrame:
+    """Matched visits prepared for the rules; loaded only when the QC tab or a visit rule needs them, then shared
+    (never change in place). Cleared with the rest by "Reload data"."""
+    d = synthetic_dir()
+    raw = _read_visits_synthetic(d) if d else _read_visits_databricks()
+    return prepare_visits(raw, load_dataset(source)["tables"]["kgAnimalDay"])
+
+
+@st.cache_resource(max_entries=4, show_spinner="Applying the visit rules…")
+def visit_rules_result(source: str, rules_items: tuple) -> dict:
+    """run_visit_rules on all visits, once per rule set (rules_items: sorted (rule, value) pairs)."""
+    return run_visit_rules(load_visits(source), dict(rules_items))
