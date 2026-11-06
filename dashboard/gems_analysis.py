@@ -63,9 +63,8 @@ def _read_databricks(table: str) -> pd.DataFrame:
         return cur.fetchall_arrow().to_pandas()
 
 
-@st.cache_data(ttl=600, show_spinner="Loading analysis tables…")
-def load_tables(source: str) -> dict[str, pd.DataFrame]:
-    """All analysis tables. `source` is part of the cache key so the two modes never share a cache."""
+def read_tables() -> dict[str, pd.DataFrame]:
+    """All analysis tables, read now (synthetic files or Databricks)."""
     d = synthetic_dir()
     read = (lambda t: _read_synthetic(d, t)) if d else _read_databricks
     out = {t: read(t) for t in TABLES}
@@ -73,6 +72,28 @@ def load_tables(source: str) -> dict[str, pd.DataFrame]:
     if len(days):
         days["Date"] = pd.to_datetime(days["Date"], errors="coerce")
     return out
+
+
+@st.cache_resource(ttl=12 * 3600, show_spinner="Loading analysis tables…")
+def load_dataset(source: str) -> dict:
+    """Everything the page needs that depends only on the tables, prepared once.
+
+    Shared by every user and every click: st.cache_resource hands back the same objects without copying
+    them (st.cache_data copied ~130 MB per click). So the page must NEVER change these frames in place;
+    filter or .assign() instead. Kept until "Reload data", an app restart, or 12 hours. `source` is part
+    of the cache key, so synthetic and real data never share it.
+    """
+    tables = read_tables()
+    days = tables["kgAnimalDay"]
+    if len(days):
+        # Calculated variables are per cow-day and do not depend on the cohort: do them once here.
+        days = add_calculated(days, tables["kgDietNutrients"])
+        tables["kgAnimalDay"] = days
+        animals, additives = animal_frame(tables["kgStudy"], tables["kgAnimal"], days)
+    else:
+        animals, additives = pd.DataFrame(), pd.DataFrame()
+    return {"tables": tables, "animals": animals, "additives": additives,
+            "loadedAt": pd.Timestamp.now(tz="UTC")}
 
 
 def animal_frame(studies: pd.DataFrame, animals: pd.DataFrame, days: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -151,7 +172,9 @@ def study_overview(days: pd.DataFrame, studies: pd.DataFrame) -> pd.DataFrame:
     if days.empty:
         return pd.DataFrame()
     g = days.groupby("studyId")
-    trt_per_animal = days.dropna(subset=["Treatment"]).groupby(["studyId", "animal_id"])["Treatment"].nunique()
+    # only the three columns needed: dropping blanks on the whole frame copied ~60 columns
+    trt_per_animal = (days[["studyId", "animal_id", "Treatment"]].dropna(subset=["Treatment"])
+                      .groupby(["studyId", "animal_id"])["Treatment"].nunique())
     max_trt = trt_per_animal.groupby("studyId").max()
     visits = days["nVisits"] if "nVisits" in days else pd.Series(np.nan, index=days.index)
     out = pd.DataFrame({
@@ -192,6 +215,25 @@ def column_labels(dictionary: pd.DataFrame, table: str) -> dict[str, str]:
         unit = r.unit if isinstance(r.unit, str) and r.unit else ("g/d" if r.column.endswith("_g_d") else "")
         labels[r.column] = f"{r.column} ({unit})" if unit else r.column
     return labels
+
+
+def plot_sample(df: pd.DataFrame, by: list[str], per_group: int = 300, seed: int = 1) -> pd.DataFrame:
+    """At most `per_group` random rows per group, for drawing only (summaries and models use every row).
+
+    Plotting every record of a large cohort sent megabytes to the browser; a fixed seed keeps the same
+    points on every redraw.
+    """
+    if df.empty:
+        return df
+    group = np.zeros(len(df), dtype=np.int64)  # one integer per group (blank counts as its own value)
+    for c in by:
+        codes, uniques = pd.factorize(df[c], use_na_sentinel=False)
+        group = group * (len(uniques) + 1) + codes
+    order = np.random.default_rng(seed).permutation(len(df))
+    place = pd.Series(group[order]).groupby(group[order]).cumcount().to_numpy()  # position in the shuffle
+    keep = np.zeros(len(df), dtype=bool)
+    keep[order[place < per_group]] = True
+    return df[keep]
 
 
 def animal_period_means(days: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame:

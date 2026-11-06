@@ -32,8 +32,6 @@ from gems_analysis import (  # noqa: E402
     FACETS,
     HAS,
     UNKNOWN,
-    add_calculated,
-    animal_frame,
     animal_period_means,
     calculated_dictionary,
     calculated_labels,
@@ -41,8 +39,9 @@ from gems_analysis import (  # noqa: E402
     column_labels,
     facet_counts,
     facet_masks,
-    load_tables,
+    load_dataset,
     numeric_columns,
+    plot_sample,
     robust_outliers,
     source_label,
     study_overview,
@@ -99,6 +98,31 @@ def tiles(items: list[tuple[str, str, str]]) -> None:
     st.markdown(f'<div class="ga-tiles">{cells}</div>', unsafe_allow_html=True)
 
 
+# Plotly needs about a second to build 61 study panels, so the two biggest figures are kept (per cohort and
+# choices) and only rebuilt when what they show changes. st.cache_data returns a copy, so show() may edit it.
+@st.cache_data(max_entries=16, show_spinner=False)
+def strip_figure(plot: pd.DataFrame, response: str, y_label: str) -> go.Figure:
+    n_studies = plot["studyId"].nunique()
+    wrap = min(6, n_studies)
+    fig = px.strip(plot, x="Treatment", y=response, color="Status", facet_col="studyId", facet_col_wrap=wrap,
+                   facet_col_spacing=0.03, facet_row_spacing=min(0.08, 0.6 / max(1, int(np.ceil(n_studies / wrap)))),
+                   color_discrete_map={"Kept": SERIES[0], "Removed": CRITICAL},
+                   labels={response: y_label, "Treatment": ""}, stripmode="overlay")
+    fig.update_traces(marker={"size": 4, "opacity": 0.5}, jitter=0.45)
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    fig.update_xaxes(matches=None)
+    return fig
+
+
+@st.cache_data(max_entries=16, show_spinner=False)
+def timeline_figure(tl: pd.DataFrame) -> go.Figure:
+    fig = px.timeline(tl.sort_values("Start"), x_start="Start", x_end="End", y="Study", color="Type",
+                      color_discrete_map=PRODUCTION_COLORS,
+                      hover_data={"Animals": True, "Animal-days": True, "Location": True})
+    fig.update_yaxes(autorange="reversed", title=None, type="category")
+    return fig
+
+
 def show(fig: go.Figure, height: int) -> None:
     fig.update_layout(height=height, margin={"l": 8, "r": 8, "t": 28, "b": 8}, font={"size": 12},
                       legend={"orientation": "h", "y": 1.0, "yanchor": "bottom", "x": 0, "title_text": ""})
@@ -112,17 +136,20 @@ user_info = get_current_user_info()
 source = source_label()
 if synthetic_dir():
     st.warning("Synthetic test data: every value is invented. This is not GEMS data.", icon="🧪")
-if st.sidebar.button("Reload data"):
-    load_tables.clear()
+if st.sidebar.button("Reload data", help="Load the kg_v1 tables again, e.g. after the KG job has run."):
+    load_dataset.clear()
     st.rerun()
-st.sidebar.caption(f"Source: {source}")
 
 try:
-    tables = load_tables(source)
+    # Loaded and prepared once, then shared by every user and click (see load_dataset). Never change
+    # these frames in place.
+    dataset = load_dataset(source)
 except Exception as exc:  # noqa: BLE001
     st.error(f"Could not load the analysis tables from {source}: {exc}")
     st.stop()
+st.sidebar.caption(f"Source: {source} · loaded {dataset['loadedAt']:%Y-%m-%d %H:%M} UTC")
 
+tables = dataset["tables"]
 studies, animals_t, days, dictionary = tables["kgStudy"], tables["kgAnimal"], tables["kgAnimalDay"], tables["kgDataDictionary"]
 if days.empty:
     st.info("There are no analysis tables yet. They appear after the KG job has run.")
@@ -131,7 +158,7 @@ if days.empty:
 # ---------------------------------------------------------------------------
 # Cohort (sidebar): feeds every tab
 # ---------------------------------------------------------------------------
-animals, additives = animal_frame(studies, animals_t, days)
+animals, additives = dataset["animals"], dataset["additives"]
 
 st.sidebar.markdown("### Cohort")
 st.sidebar.caption("Every tab uses this selection. The number after each choice counts the animals "
@@ -198,9 +225,8 @@ date_to = dates[1] if len(dates) > 1 and dates[1] != day_max else None
 ok = base.copy()
 for m in masks.values():
     ok &= m
+# The days already carry the calculated variables (methane yield, FPCM, ...; see load_dataset).
 cdays = cohort_days(days, set(animals.loc[ok, "animal_id"]), date_from, date_to, chosen["additive"])
-# Methane yield, FPCM, nutrient intakes, ...: calculated here per cow-day, not stored anywhere.
-cdays = add_calculated(cdays, tables["kgDietNutrients"])
 cohort_studies = sorted(cdays["studyId"].astype(str).unique())
 cohort_animals = set(cdays["animal_id"])
 st.sidebar.markdown(f"**{len(cohort_studies)}** studies · **{len(cohort_animals):,}** animals · "
@@ -223,7 +249,29 @@ if cdays.empty:
     st.info("No animal-days match this cohort. Loosen the choices in the sidebar.")
     st.stop()
 
-tab_overview, tab_model, tab_export = st.tabs(["Overview", "Model", "Export"])
+# Only the open tab runs (a closed tab updates when it is opened; every tab uses the same cohort).
+# Streamlit forgets the value of a widget that is not drawn, so the tabs' widget values are saved again
+# here: your choices are still there when you come back to a tab.
+TAB_WIDGETS = ["ov_study", "m_response", "m_level", "m_covariates", "m_screen", "m_screen_cols", "m_within",
+               "m_threshold", "m_reference"]
+for _k in TAB_WIDGETS:
+    if _k in st.session_state:
+        st.session_state[_k] = st.session_state[_k]
+
+
+def keep(key: str, default, options=None, multi: bool = False) -> None:
+    """Start value of a tab widget, kept valid for the current options (the widget then gets no default)."""
+    if key not in st.session_state:
+        st.session_state[key] = default
+    elif options is not None:
+        current = st.session_state[key]
+        if multi:
+            st.session_state[key] = [v for v in current if v in options]
+        elif current not in options:
+            st.session_state[key] = default
+
+
+tab_overview, tab_model, tab_export = st.tabs(["Overview", "Model", "Export"], key="analysis_tab", on_change="rerun")
 
 
 # ---------------------------------------------------------------------------
@@ -253,15 +301,12 @@ def render_overview() -> None:
     with left:
         heading("When the studies ran", "One bar per study, first to last record in the cohort.")
         tl = ov.assign(Start=pd.to_datetime(ov["First"]), End=pd.to_datetime(ov["Last"]) + pd.Timedelta(days=1))
-        fig = px.timeline(tl.sort_values("Start"), x_start="Start", x_end="End", y="Study", color="Type",
-                          color_discrete_map=PRODUCTION_COLORS,
-                          hover_data={"Animals": True, "Animal-days": True, "Location": True})
-        fig.update_yaxes(autorange="reversed", title=None, type="category")
-        show(fig, max(160, 22 * len(tl) + 80))
+        show(timeline_figure(tl), max(160, 22 * len(tl) + 80))
     with right:
         heading("Coverage: animals × days", "GreenFeed visits per animal and day. Hover for the treatment.")
         by_ch4 = ov.sort_values("CH4 days", ascending=False)["Study"].tolist()
-        study = st.selectbox("Study", by_ch4, help="Studies ordered by CH4 days in the cohort.",
+        keep("ov_study", by_ch4[0], by_ch4)
+        study = st.selectbox("Study", by_ch4, key="ov_study", help="Studies ordered by CH4 days in the cohort.",
                              label_visibility="collapsed")
         sub = cdays[cdays["studyId"].astype(str) == str(study)]
         label_col = "AnimalIdentifier" if "AnimalIdentifier" in sub and sub["AnimalIdentifier"].notna().any() else "animal_id"
@@ -292,13 +337,17 @@ def render_model() -> None:
         st.info("The cohort has no numeric measurements.")
         return
     c1, c2, c3, c4 = st.columns([3, 2, 3, 2], vertical_alignment="bottom")
-    response = c1.selectbox("Measurement", values, index=values.index("CH4_g_d") if "CH4_g_d" in values else 0,
-                            format_func=lambda c: labels.get(c, c))
-    level = c2.radio("Level", ["Animal-day", "Animal-period mean"], horizontal=True,
+    keep("m_response", "CH4_g_d" if "CH4_g_d" in values else values[0], values)
+    response = c1.selectbox("Measurement", values, key="m_response", format_func=lambda c: labels.get(c, c))
+    keep("m_level", "Animal-day")
+    level = c2.radio("Level", ["Animal-day", "Animal-period mean"], key="m_level", horizontal=True,
                      help="Animal-period mean: one value per animal, treatment and period.")
-    covariates = c3.multiselect("Covariates (optional)", [v for v in values if v != response],
+    covariate_options = [v for v in values if v != response]
+    keep("m_covariates", [], covariate_options, multi=True)
+    covariates = c3.multiselect("Covariates (optional)", covariate_options, key="m_covariates",
                                 format_func=lambda c: labels.get(c, c))
-    screen = c4.toggle("Remove outliers", value=False,
+    keep("m_screen", False)
+    screen = c4.toggle("Remove outliers", key="m_screen",
                        help="Off by default. Values outside the plausible range are original source data; "
                             "decide here whether to screen them, and see what is removed.")
     for c in [v for v in [response] + covariates if v in CALCULATED]:
@@ -306,6 +355,8 @@ def render_model() -> None:
         st.caption(f"**{label}** ({unit}) is calculated in this page for each cow and day: {how}. "
                    f"Missing when an input is missing that day. {note}")
     used = [response] + covariates
+    ids = [c for c in ["studyId", "animal_id", "AnimalIdentifier", "Treatment", "Period"] if c in data.columns]
+    data = data[ids + used]  # only the columns needed: dropping blanks on all ~60 columns was slow
     if level == "Animal-period mean":
         data = animal_period_means(data, used)
     data = data.dropna(subset=used + ["Treatment"]).reset_index(drop=True)
@@ -317,10 +368,13 @@ def render_model() -> None:
     if screen:
         heading("Outlier screening")
         s1, s2, s3 = st.columns([3, 2, 1])
-        screen_cols = s1.multiselect("Screen these measurements", used, default=[response],
+        keep("m_screen_cols", [response], used, multi=True)
+        screen_cols = s1.multiselect("Screen these measurements", used, key="m_screen_cols",
                                      format_func=lambda c: labels.get(c, c))
-        within = s2.radio("Within", ["Study", "Study × treatment"], horizontal=True)
-        threshold = s3.number_input("Robust z", min_value=2.0, max_value=10.0, value=3.5, step=0.5)
+        keep("m_within", "Study")
+        within = s2.radio("Within", ["Study", "Study × treatment"], key="m_within", horizontal=True)
+        keep("m_threshold", 3.5)
+        threshold = s3.number_input("Robust z", min_value=2.0, max_value=10.0, step=0.5, key="m_threshold")
         st.caption("A value is flagged when |x − median| / (1.4826 × MAD) is above the threshold within its group "
                    "(Iglewicz & Hoaglin). Groups with fewer than 10 values are not screened. A record is removed "
                    "when any screened measurement is flagged.")
@@ -335,17 +389,15 @@ def render_model() -> None:
     kept = data[~removed]
 
     n_studies = data["studyId"].nunique()
-    heading("By treatment", "One panel per study." + (" Red: removed by the outlier screen." if screen else ""))
-    plot = data.assign(Status=np.where(removed, "Removed", "Kept"))
+    plot_all = data.assign(Status=np.where(removed, "Removed", "Kept"))
+    plot = plot_sample(plot_all, ["studyId", "Treatment", "Status"])  # drawing only; numbers use every record
+    shown = "" if len(plot) == len(plot_all) else (
+        f" Showing a random {len(plot):,} of {len(plot_all):,} records (at most 300 per study, treatment and "
+        "status); the summary and the model use all of them.")
+    heading("By treatment", "One panel per study." + (" Red: removed by the outlier screen." if screen else "") + shown)
     wrap = min(6, n_studies)
-    fig = px.strip(plot, x="Treatment", y=response, color="Status", facet_col="studyId", facet_col_wrap=wrap,
-                   facet_col_spacing=0.03, facet_row_spacing=min(0.08, 0.6 / max(1, int(np.ceil(n_studies / wrap)))),
-                   color_discrete_map={"Kept": SERIES[0], "Removed": CRITICAL},
-                   labels={response: labels.get(response, response), "Treatment": ""}, stripmode="overlay")
-    fig.update_traces(marker={"size": 4, "opacity": 0.5}, jitter=0.45)
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-    fig.update_xaxes(matches=None)
-    show(fig, 240 * int(np.ceil(n_studies / wrap)) + 40)
+    show(strip_figure(plot[["studyId", "Treatment", "Status", response]], response, labels.get(response, response)),
+         240 * int(np.ceil(n_studies / wrap)) + 40)
     with st.expander("Summary by study and treatment"):
         summary = (kept.groupby(["studyId", "Treatment"])[response]
                    .agg(n="count", mean="mean", sd="std", median="median").round(2).reset_index())
@@ -358,8 +410,8 @@ def render_model() -> None:
     treatments = sorted(kept["Treatment"].astype(str).unique())
     setup, results = st.columns([1, 2], gap="large")
     with setup:
-        reference = st.selectbox("Reference treatment", treatments,
-                                 index=treatments.index("Control") if "Control" in treatments else 0,
+        keep("m_reference", "Control" if "Control" in treatments else treatments[0], treatments)
+        reference = st.selectbox("Reference treatment", treatments, key="m_reference",
                                  help="The other treatments are estimated as differences from this one.")
         st.markdown(f"`{response} ~ {rhs}`  \nRandom intercepts for {random_text}; {len(kept):,} records.")
         fit = st.button("Fit model", type="primary")
@@ -397,9 +449,11 @@ def render_model() -> None:
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
-def _csv(frame: pd.DataFrame, item: str):
-    """Deferred CSV for st.download_button: built, and logged, only when the user clicks."""
+def _csv(make_frame, item: str):
+    """Deferred CSV for st.download_button: the table is prepared, written and logged only when the user
+    clicks (preparing the whole cohort's animal-days each time the tab opened took seconds)."""
     def make() -> bytes:
+        frame = make_frame()
         log_download(user_info.email, "analysis", item, len(frame), cohort_studies, recipe)
         return frame.to_csv(index=False).encode("utf-8")
     return make
@@ -431,23 +485,30 @@ def render_tables() -> None:
         return
     st.caption("Each download is logged with your email, the table, the row count and the recipe above.")
     in_studies = lambda df: df[df["studyId"].astype(str).isin(cohort_studies)] if "studyId" in df else df.iloc[0:0]  # noqa: E731
+    in_cohort = animals_t["animal_id"].isin(cohort_animals)
+    small = {item: in_studies(tables[t]) for item, t in [("studies", "kgStudy"), ("diets", "kgDiet"),
+                                                         ("diet_nutrients", "kgDietNutrients")]}
+    # (label, item, rows, how to make the table): only the row count is worked out now
     items = [
-        ("Animal-days", "animal_days", cdays.assign(Date=cdays["Date"].dt.date)),
-        ("Animals", "animals", animals_t[animals_t["animal_id"].isin(cohort_animals)]),
-        ("Studies", "studies", in_studies(studies)),
-        ("Diets (ingredients)", "diets", in_studies(tables["kgDiet"])),
-        ("Diet nutrients", "diet_nutrients", in_studies(tables["kgDietNutrients"])),
+        ("Animal-days", "animal_days", len(cdays), lambda: cdays.assign(Date=cdays["Date"].dt.date)),
+        ("Animals", "animals", int(in_cohort.sum()), lambda: animals_t[in_cohort]),
+        ("Studies", "studies", len(small["studies"]), lambda: small["studies"]),
+        ("Diets (ingredients)", "diets", len(small["diets"]), lambda: small["diets"]),
+        ("Diet nutrients", "diet_nutrients", len(small["diet_nutrients"]), lambda: small["diet_nutrients"]),
     ]
-    for label, item, frame in items:
-        if frame.empty:
+    for label, item, rows, make_frame in items:
+        if not rows:
             continue
-        st.download_button(f"{label} — {len(frame):,} rows (CSV)", _csv(frame, item),
+        st.download_button(f"{label} — {rows:,} rows (CSV)", _csv(make_frame, item),
                            file_name=f"gems_cohort_{item}.csv", mime="text/csv", on_click="ignore", key=f"dl_{item}")
 
 
-with tab_overview:
-    render_overview()
-with tab_model:
-    render_model()
-with tab_export:
-    render_export()
+if tab_overview.open:
+    with tab_overview:
+        render_overview()
+if tab_model.open:
+    with tab_model:
+        render_model()
+if tab_export.open:
+    with tab_export:
+        render_export()
