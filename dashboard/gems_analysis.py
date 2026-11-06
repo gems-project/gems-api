@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy import stats
 
 TABLES = ["kgStudy", "kgAnimal", "kgAnimalDay", "kgDiet", "kgDietNutrients", "kgDataDictionary"]
 ID_COLUMNS = {"studyId", "animal_id", "AnimalIdentifier", "Date", "treatment_id", "Treatment", "Period"}
@@ -234,6 +235,107 @@ def plot_sample(df: pd.DataFrame, by: list[str], per_group: int = 300, seed: int
     keep = np.zeros(len(df), dtype=bool)
     keep[order[place < per_group]] = True
     return df[keep]
+
+
+def study_treatment_means(data: pd.DataFrame, value: str) -> pd.DataFrame:
+    """Per study and treatment: the mean over animals with a 95% confidence interval.
+
+    Each animal's records are averaged first, so an animal measured on 20 days counts once; treating its
+    days as independent records would make the interval far too narrow. CI = mean ± t(0.975, n - 1) ×
+    SD / √n over the n animal means; blank when there is only one animal.
+    """
+    keys = ["studyId", "Treatment"]
+    if data.empty:
+        return pd.DataFrame(columns=keys + ["animals", "records", "mean", "sd", "ci_low", "ci_high"])
+    per_animal = data.dropna(subset=[value]).groupby(keys + ["animal_id"], observed=True)[value].agg(["mean", "size"])
+    g = per_animal.groupby(level=keys, observed=True)
+    out = pd.DataFrame({"animals": g["mean"].count(), "records": g["size"].sum(),
+                        "mean": g["mean"].mean(), "sd": g["mean"].std()})
+    df = out["animals"] - 1
+    t = np.where(df >= 1, stats.t.ppf(0.975, np.maximum(df, 1)), np.nan)
+    half = t * out["sd"] / np.sqrt(out["animals"])
+    out["ci_low"], out["ci_high"] = out["mean"] - half, out["mean"] + half
+    return out.reset_index()
+
+
+def box_stats(data: pd.DataFrame, value: str, by: str = "studyId") -> pd.DataFrame:
+    """Per group: n, quartiles, median and Tukey whiskers (the most extreme values within 1.5 × IQR of the
+    box), plus how many values lie beyond them. Computed here so the browser gets 6 numbers per study, not
+    every record."""
+    d = data[[by, value]].dropna()
+    if d.empty:
+        return pd.DataFrame(columns=[by, "n", "q1", "median", "q3", "lowerfence", "upperfence", "beyond"])
+    g = d.groupby(by, observed=True)[value]
+    out = pd.DataFrame({"n": g.size(), "q1": g.quantile(0.25), "median": g.median(), "q3": g.quantile(0.75)})
+    iqr = out["q3"] - out["q1"]
+    low_lim = d[by].map(out["q1"] - 1.5 * iqr)
+    high_lim = d[by].map(out["q3"] + 1.5 * iqr)
+    inside = (d[value] >= low_lim) & (d[value] <= high_lim)
+    out["lowerfence"] = d[value].where(inside).groupby(d[by], observed=True).min()
+    out["upperfence"] = d[value].where(inside).groupby(d[by], observed=True).max()
+    out["beyond"] = (~inside).groupby(d[by], observed=True).sum()
+    return out.reset_index()
+
+
+def _slope(x: pd.Series, y: pd.Series) -> float:
+    """Least-squares slope of y on x; missing when x does not vary."""
+    dx = x - x.mean()
+    ss = float((dx * dx).sum())
+    return float((dx * (y - y.mean())).sum()) / ss if ss > 0 else np.nan
+
+
+def covariate_slopes(data: pd.DataFrame, y: str, x: str, by: str = "studyId", min_n: int = 3) -> dict:
+    """How y changes with x: pooled over all records, within studies and between studies.
+
+    - overall: one line through every record (mixes the two below);
+    - within: from each record's deviation from its own study's means, i.e. the relationship inside studies;
+    - between: through the study means, i.e. how studies with higher x differ in y.
+    They often differ in multi-study data (St-Pierre 2001); with a random study effect, the model's covariate
+    estimate combines the two, usually leaning towards the within-study slope. `lines` holds each study's own
+    fitted line over its x range (studies with at least `min_n` records and some spread in x).
+    """
+    d = data[[by, x, y]].dropna()
+    out = {"overall": np.nan, "intercept": np.nan, "within": np.nan, "between": np.nan, "n": len(d),
+           "xmin": np.nan, "xmax": np.nan, "lines": pd.DataFrame(columns=[by, "slope", "intercept", "x0", "x1", "n"])}
+    if len(d) < 2:
+        return out
+    out["xmin"], out["xmax"] = float(d[x].min()), float(d[x].max())
+    out["overall"] = _slope(d[x], d[y])
+    out["intercept"] = d[y].mean() - out["overall"] * d[x].mean() if not np.isnan(out["overall"]) else np.nan
+    g = d.groupby(by, observed=True)
+    out["within"] = _slope(d[x] - g[x].transform("mean"), d[y] - g[y].transform("mean"))
+    means = g[[x, y]].mean()
+    if len(means) >= 3:
+        out["between"] = _slope(means[x], means[y])
+    rows = []
+    for key, part in g:
+        if len(part) >= min_n:
+            b = _slope(part[x], part[y])
+            if not np.isnan(b):
+                rows.append({by: key, "slope": b, "intercept": part[y].mean() - b * part[x].mean(),
+                             "x0": part[x].min(), "x1": part[x].max(), "n": len(part)})
+    if rows:
+        out["lines"] = pd.DataFrame(rows)
+    return out
+
+
+def treatment_effects(coefs: pd.DataFrame) -> pd.DataFrame:
+    """The treatment rows of a fixed-effects table (differences from the reference), with plain labels."""
+    rows = coefs[coefs["term"].astype(str).str.match(r"^Treatment\[T\.")].copy()
+    rows["treatment"] = rows["term"].astype(str).str.replace(r"^Treatment\[T\.(.*)\]$", r"\1", regex=True)
+    return rows[["treatment", "estimate", "ci_low", "ci_high", "p_value"]].reset_index(drop=True)
+
+
+def variance_shares(components: list[dict]) -> pd.DataFrame:
+    """Each variance component (study, animal, residual, ...) as a percentage of their total."""
+    df = pd.DataFrame(components)
+    if df.empty or "variance" not in df:
+        return pd.DataFrame(columns=["name", "variance", "share"])
+    df["variance"] = pd.to_numeric(df["variance"], errors="coerce")
+    df = df[df["variance"] >= 0][["name", "variance"]].reset_index(drop=True)
+    total = df["variance"].sum()
+    df["share"] = df["variance"] / total * 100 if total > 0 else np.nan
+    return df
 
 
 def animal_period_means(days: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame:

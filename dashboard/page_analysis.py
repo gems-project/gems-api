@@ -33,10 +33,12 @@ from gems_analysis import (  # noqa: E402
     HAS,
     UNKNOWN,
     animal_period_means,
+    box_stats,
     calculated_dictionary,
     calculated_labels,
     cohort_days,
     column_labels,
+    covariate_slopes,
     facet_counts,
     facet_masks,
     load_dataset,
@@ -45,7 +47,10 @@ from gems_analysis import (  # noqa: E402
     robust_outliers,
     source_label,
     study_overview,
+    study_treatment_means,
     synthetic_dir,
+    treatment_effects,
+    variance_shares,
 )
 from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_downloads import log_download  # noqa: E402
@@ -98,22 +103,112 @@ def tiles(items: list[tuple[str, str, str]]) -> None:
     st.markdown(f'<div class="ga-tiles">{cells}</div>', unsafe_allow_html=True)
 
 
-# Plotly needs about a second to build 61 study panels, so the two biggest figures are kept (per cohort and
-# choices) and only rebuilt when what they show changes. st.cache_data returns a copy, so show() may edit it.
-@st.cache_data(max_entries=16, show_spinner=False)
-def strip_figure(plot: pd.DataFrame, response: str, y_label: str) -> go.Figure:
-    n_studies = plot["studyId"].nunique()
-    wrap = min(6, n_studies)
-    fig = px.strip(plot, x="Treatment", y=response, color="Status", facet_col="studyId", facet_col_wrap=wrap,
-                   facet_col_spacing=0.03, facet_row_spacing=min(0.08, 0.6 / max(1, int(np.ceil(n_studies / wrap)))),
-                   color_discrete_map={"Kept": SERIES[0], "Removed": CRITICAL},
-                   labels={response: y_label, "Treatment": ""}, stripmode="overlay")
-    fig.update_traces(marker={"size": 4, "opacity": 0.5}, jitter=0.45)
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-    fig.update_xaxes(matches=None)
+def _ci_text(low, high) -> str:
+    return "one animal, no interval" if pd.isna(low) or pd.isna(high) else f"{low:.2f} to {high:.2f}"
+
+
+def means_figure(means: pd.DataFrame, x_label: str) -> go.Figure:
+    """Forest-plot style: one row per study and treatment, the mean over animals and its 95% CI.
+    Treatment labels are study-specific, so each row names its own study and treatment."""
+    m = means.sort_values(["studyId", "Treatment"], key=lambda s: s.astype(str)).reset_index(drop=True)
+    ci = [_ci_text(lo, hi) for lo, hi in zip(m["ci_low"], m["ci_high"])]
+    fig = go.Figure(go.Scatter(
+        x=m["mean"], y=[m["studyId"].astype(str).tolist(), m["Treatment"].astype(str).tolist()], mode="markers",
+        marker={"color": SERIES[0], "size": 7},
+        error_x={"type": "data", "symmetric": False, "array": (m["ci_high"] - m["mean"]).tolist(),
+                 "arrayminus": (m["mean"] - m["ci_low"]).tolist(), "thickness": 1.5, "width": 0, "color": SERIES[0]},
+        customdata=list(zip(m["studyId"].astype(str), m["Treatment"].astype(str), m["animals"], m["records"], ci)),
+        hovertemplate="Study %{customdata[0]} · %{customdata[1]}<br>Mean %{x:.2f}<br>95% CI %{customdata[4]}"
+                      "<br>%{customdata[2]} animals · %{customdata[3]} records<extra></extra>"))
+    fig.update_yaxes(autorange="reversed", title=None)
+    fig.update_xaxes(title=x_label)
     return fig
 
 
+def distribution_figure(stats_df: pd.DataFrame, y_label: str, production: dict) -> go.Figure:
+    """One box per study, sorted by median and coloured by production type. Whiskers reach the most extreme
+    values within 1.5 × IQR; the box statistics are computed in Python (see box_stats)."""
+    s = stats_df.sort_values("median").reset_index(drop=True)
+    prod = s["studyId"].astype(str).map(production).fillna(UNKNOWN)
+    fig = go.Figure()
+    for p in list(dict.fromkeys([*PRODUCTION_COLORS, *prod])):
+        part = s[prod == p]
+        if part.empty:
+            continue
+        fig.add_trace(go.Box(x=part["studyId"].astype(str), q1=part["q1"], median=part["median"], q3=part["q3"],
+                             lowerfence=part["lowerfence"], upperfence=part["upperfence"], name=str(p),
+                             marker_color=PRODUCTION_COLORS.get(p, OTHER), line={"width": 1}, boxpoints=False))
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=s["studyId"].astype(str).tolist(),
+                     title=None)
+    fig.update_yaxes(title=y_label)
+    return fig
+
+
+def covariate_figure(points: pd.DataFrame, x: str, y: str, slopes: dict, x_label: str, y_label: str) -> go.Figure:
+    """Records (a sample, grey), each study's own line (thin) and the line through all records (bold)."""
+    fig = go.Figure(go.Scatter(x=points[x], y=points[y], mode="markers", name="Records (sample)",
+                               marker={"color": OTHER, "size": 4, "opacity": 0.45}, hoverinfo="skip"))
+    lines = slopes["lines"]
+    if len(lines):
+        xs, ys = [], []
+        for r in lines.itertuples():
+            xs += [r.x0, r.x1, None]
+            ys += [r.intercept + r.slope * r.x0, r.intercept + r.slope * r.x1, None]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="Each study's line", hoverinfo="skip",
+                                 line={"color": SERIES[0], "width": 1}, opacity=0.7))
+    if not np.isnan(slopes["overall"]):
+        x0, x1, a, b = slopes["xmin"], slopes["xmax"], slopes["intercept"], slopes["overall"]
+        fig.add_trace(go.Scatter(x=[x0, x1], y=[a + b * x0, a + b * x1], mode="lines", name="All records pooled",
+                                 line={"color": SERIES[1], "width": 3}, hoverinfo="skip"))
+    fig.update_xaxes(title=x_label)
+    fig.update_yaxes(title=y_label)
+    return fig
+
+
+def effects_figure(effects: pd.DataFrame, x_label: str) -> go.Figure:
+    """Each treatment's estimated difference from the reference with its 95% CI; dashed line = no difference."""
+    ci = [_ci_text(lo, hi) for lo, hi in zip(effects["ci_low"], effects["ci_high"])]
+    fig = go.Figure(go.Scatter(
+        x=effects["estimate"], y=effects["treatment"].astype(str), mode="markers",
+        marker={"color": SERIES[1], "size": 9, "symbol": "square"},
+        error_x={"type": "data", "symmetric": False, "array": (effects["ci_high"] - effects["estimate"]).tolist(),
+                 "arrayminus": (effects["estimate"] - effects["ci_low"]).tolist(), "thickness": 2, "width": 0,
+                 "color": SERIES[1]},
+        customdata=ci, hovertemplate="%{y}: %{x:.2f}<br>95% CI %{customdata}<extra></extra>"))
+    fig.add_vline(x=0, line_dash="dash", line_color=OTHER)
+    values = pd.concat([effects["estimate"], effects["ci_low"], effects["ci_high"]]).dropna()
+    lo, hi = min(0.0, float(values.min())), max(0.0, float(values.max()))  # always show the zero line with room
+    pad = (hi - lo) * 0.08 or 1.0
+    fig.update_yaxes(type="category", autorange="reversed", title=None)
+    fig.update_xaxes(title=x_label, range=[lo - pad, hi + pad])
+    return fig
+
+
+def variance_figure(shares: pd.DataFrame) -> go.Figure:
+    """One stacked bar: how the total variation splits between the random effects and the residual."""
+    fills, inks = [SEQ[5], SEQ[3], SEQ[1], SEQ[0]], ["#ffffff", "#ffffff", SEQ[6], SEQ[6]]
+    fig = go.Figure()
+    for i, r in enumerate(shares.itertuples()):
+        fig.add_bar(x=[r.share], y=[""], orientation="h", name=f"{r.name} ({r.share:.0f}%)",
+                    marker_color=fills[i % 4], text=[f"{r.share:.0f}%"], textposition="inside",
+                    insidetextanchor="middle", textfont={"color": inks[i % 4]},
+                    hovertemplate=f"{r.name}: %{{x:.1f}}% of the variance<extra></extra>")
+    fig.update_layout(barmode="stack", legend={"traceorder": "normal"})  # legend in the bar's left-to-right order
+    fig.update_xaxes(range=[0, 100], ticksuffix="%", title=None)
+    fig.update_yaxes(visible=False)
+    return fig
+
+
+@st.cache_data(max_entries=8, show_spinner=False)
+def fit_results(model_data: pd.DataFrame, formula: str, group_cols: tuple, reference: str) -> dict:
+    """Fit once per model and data: redraws, tab switches and refits of the same model reuse the result.
+    `reference` is part of the cache key because it sets how the treatments are coded."""
+    model = fit_mixedlm_multi(model_data, formula, list(group_cols), nested=True)
+    return {"stats": fit_statistics(model, "mixed"), "converged": bool(getattr(model, "converged", False)),
+            "coefs": coefficient_table(model), "variances": variance_components(model)}
+
+
+# px.timeline is slow-ish; kept per cohort (st.cache_data returns a copy, so show() may edit it).
 @st.cache_data(max_entries=16, show_spinner=False)
 def timeline_figure(tl: pd.DataFrame) -> go.Figure:
     fig = px.timeline(tl.sort_values("Start"), x_start="Start", x_end="End", y="Study", color="Type",
@@ -339,9 +434,11 @@ def render_model() -> None:
     c1, c2, c3, c4 = st.columns([3, 2, 3, 2], vertical_alignment="bottom")
     keep("m_response", "CH4_g_d" if "CH4_g_d" in values else values[0], values)
     response = c1.selectbox("Measurement", values, key="m_response", format_func=lambda c: labels.get(c, c))
-    keep("m_level", "Animal-day")
-    level = c2.radio("Level", ["Animal-day", "Animal-period mean"], key="m_level", horizontal=True,
-                     help="Animal-period mean: one value per animal, treatment and period.")
+    keep("m_level", "Animal-period mean")
+    level = c2.radio("Level", ["Animal-period mean", "Animal-day"], key="m_level", horizontal=True,
+                     help="Animal-period mean: one value per animal, treatment and period, the usual unit for "
+                          "comparing treatments; the model fits in seconds. Animal-day: every daily record; the "
+                          "model can take minutes on a large cohort.")
     covariate_options = [v for v in values if v != response]
     keep("m_covariates", [], covariate_options, multi=True)
     covariates = c3.multiselect("Covariates (optional)", covariate_options, key="m_covariates",
@@ -388,20 +485,39 @@ def render_model() -> None:
                 st.dataframe(per_study.reset_index(), hide_index=True, use_container_width=True)
     kept = data[~removed]
 
-    n_studies = data["studyId"].nunique()
-    plot_all = data.assign(Status=np.where(removed, "Removed", "Kept"))
-    plot = plot_sample(plot_all, ["studyId", "Treatment", "Status"])  # drawing only; numbers use every record
-    shown = "" if len(plot) == len(plot_all) else (
-        f" Showing a random {len(plot):,} of {len(plot_all):,} records (at most 300 per study, treatment and "
-        "status); the summary and the model use all of them.")
-    heading("By treatment", "One panel per study." + (" Red: removed by the outlier screen." if screen else "") + shown)
-    wrap = min(6, n_studies)
-    show(strip_figure(plot[["studyId", "Treatment", "Status", response]], response, labels.get(response, response)),
-         240 * int(np.ceil(n_studies / wrap)) + 40)
-    with st.expander("Summary by study and treatment"):
-        summary = (kept.groupby(["studyId", "Treatment"])[response]
-                   .agg(n="count", mean="mean", sd="std", median="median").round(2).reset_index())
-        st.dataframe(summary, hide_index=True, use_container_width=True)
+    unit_label = labels.get(response, response)
+    screened = " Records removed by the outlier screen are left out." if screen and removed.any() else ""
+
+    heading("Distribution by study", "One box per study, lowest median first. The box holds the middle half of the "
+            "records, the line inside is the median, and the whiskers reach the most extreme values within "
+            "1.5 × IQR. A study far from the rest often points to a unit or recording problem." + screened)
+    production = (studies.set_index(studies["studyId"].astype(str))["ProductionType"].to_dict()
+                  if "ProductionType" in studies else {})
+    show(distribution_figure(box_stats(kept, response), unit_label, production), 380)
+
+    means = study_treatment_means(kept, response)
+    heading("Means by study and treatment",
+            "Mean over animals with a 95% confidence interval: each animal's records are averaged first, so an "
+            "animal counts once however many days it was measured. Treatment names are the study's own." + screened)
+    show(means_figure(means, unit_label), 18 * len(means) + 90)
+    with st.expander("Means by study and treatment (table)"):
+        st.dataframe(means.round(2), hide_index=True, use_container_width=True)
+
+    if covariates:
+        heading("Relationship with the covariates", "Grey: records (at most 150 per study). Thin lines: each "
+                "study's own slope. Bold: one line through all records. When the slope inside studies differs "
+                "from the slope between studies, the two tell different stories.")
+        cols = st.columns(min(len(covariates), 2), gap="medium")
+        fmt = lambda v: "—" if v is None or np.isnan(v) else f"{v:.3g}"  # noqa: E731
+        for i, cov in enumerate(covariates):
+            slopes = covariate_slopes(kept, response, cov)
+            points = plot_sample(kept[["studyId", cov, response]].dropna(), ["studyId"], per_group=150)
+            with cols[i % len(cols)]:
+                show(covariate_figure(points, cov, response, slopes, labels.get(cov, cov), unit_label), 360)
+                st.caption(f"Change in {unit_label} per unit of {labels.get(cov, cov)}: all records pooled "
+                           f"**{fmt(slopes['overall'])}**, within studies **{fmt(slopes['within'])}**, between "
+                           f"studies **{fmt(slopes['between'])}**. The model's estimate combines within and "
+                           "between, usually leaning towards within.")
 
     heading("Mixed model")
     group_cols = ["studyId", "animal_id"] if kept["studyId"].nunique() > 1 else ["animal_id"]
@@ -414,31 +530,53 @@ def render_model() -> None:
         reference = st.selectbox("Reference treatment", treatments, key="m_reference",
                                  help="The other treatments are estimated as differences from this one.")
         st.markdown(f"`{response} ~ {rhs}`  \nRandom intercepts for {random_text}; {len(kept):,} records.")
+        if level == "Animal-day" and len(kept) > 20_000:
+            st.caption(f"Fitting {len(kept):,} daily records can take many minutes. Animal-period means usually "
+                       "fit in seconds.")
         fit = st.button("Fit model", type="primary")
     model_data = kept.assign(Treatment=pd.Categorical(kept["Treatment"].astype(str),
                                                       categories=[reference] + [t for t in treatments if t != reference]))
+    formula = build_formula(response, ["Treatment"] + covariates)
+    # The results stay on screen (and a refit of the same model is instant) until the model or its data change.
+    spec = (formula, tuple(group_cols), reference, int(pd.util.hash_pandas_object(model_data, index=False).sum()))
+    if fit:
+        st.session_state["m_fitted_spec"] = spec
     with results:
-        if not fit:
-            st.caption("Results appear here after **Fit model**.")
+        if st.session_state.get("m_fitted_spec") != spec:
+            changed = " The model or its data changed since the last fit." if "m_fitted_spec" in st.session_state else ""
+            st.caption("Results appear here after **Fit model**." + changed)
             return
         try:
-            with st.spinner("Fitting…"):
-                model = fit_mixedlm_multi(model_data, build_formula(response, ["Treatment"] + covariates), group_cols, nested=True)
+            with st.spinner(f"Fitting the model on {len(model_data):,} records…"):
+                res = fit_results(model_data, formula, tuple(group_cols), reference)
         except Exception as exc:  # noqa: BLE001
+            st.session_state.pop("m_fitted_spec", None)
             st.error(f"The model could not be fitted: {exc}")
             return
-        stats = fit_statistics(model, "mixed")
+        stats = res["stats"]
         tiles([
             ("Observations", f"{int(stats.get('nobs') or 0):,}", ""),
             ("Log-likelihood", f"{stats['llf']:.1f}" if stats.get("llf") is not None else "—", ""),
-            ("Converged", "Yes" if getattr(model, "converged", False) else "No", ""),
+            ("Converged", "Yes" if res["converged"] else "No", ""),
         ])
-        coefs = coefficient_table(model)
-        coefs = coefs[~coefs["term"].astype(str).str.endswith(" Var")]  # variances are shown beside
+        coefs = res["coefs"]
+        coefs = coefs[~coefs["term"].astype(str).str.endswith(" Var")].copy()  # variances are shown beside
+        effects = treatment_effects(coefs)
+        if len(effects):
+            heading(f"Treatment effects: difference from {reference}", "Estimate and 95% confidence interval. "
+                    "The dashed line is no difference.")
+            show(effects_figure(effects, f"Difference in {unit_label}"), 34 * len(effects) + 90)
+        residual_span = "day to day" if level == "Animal-day" else "period to period"
+        names = {"Group": "Between studies" if len(group_cols) == 2 else "Between animals",
+                 "animal_id": "Between animals (within study)", "residual": f"Within animal ({residual_span})"}
+        shares = variance_shares(res["variances"]).replace({"name": names})
+        if len(shares) and shares["share"].notna().all():
+            heading("Where the variation is", "Share of the total variance left after the treatment effects. "
+                    "A large within-animal share means more measurements per animal are needed.")
+            show(variance_figure(shares), 150)
         if "p_value" in coefs:
             coefs["p_value"] = coefs["p_value"].map(lambda p: "" if pd.isna(p) else "<0.001" if p < 0.001 else f"{p:.3f}")
-        names = {"Group": group_cols[0], "animal_id": "animal within study" if len(group_cols) == 2 else "animal"}
-        variances = pd.DataFrame(variance_components(model)).replace({"name": names})
+        variances = pd.DataFrame(res["variances"]).replace({"name": names})
         f1, f2 = st.columns([3, 2])
         f1.markdown("**Fixed effects**")
         f1.dataframe(coefs.round(3), hide_index=True, use_container_width=True)
