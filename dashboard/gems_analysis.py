@@ -618,6 +618,7 @@ def prepare_visits(raw: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
     v["_animal"] = pd.factorize(v["animal_id"])[0]
     v["_day"] = v.groupby(["animal_id", "Date"], sort=False).ngroup()
     v["_segment"] = v.groupby(["animal_id", "Treatment", "Period"], sort=False, dropna=False).ngroup()
+    v["_group"] = v.groupby(["studyId", "Treatment", "Period"], sort=False, dropna=False).ngroup()  # for repeatability
     return v.drop(columns=["Treatment", "Period", "ExperimentalPhase"])  # only needed for the codes above
 
 
@@ -744,3 +745,148 @@ def load_visits(source: str) -> pd.DataFrame:
 def visit_rules_result(source: str, rules_items: tuple) -> dict:
     """run_visit_rules on all visits, once per rule set (rules_items: sorted (rule, value) pairs)."""
     return run_visit_rules(load_visits(source), dict(rules_items))
+
+
+# ---------------------------------------------------------------------------
+# Standardisation lab: how many days (or visits) an animal needs for a reliable mean
+# ---------------------------------------------------------------------------
+def repeatability_frame(days: pd.DataFrame, value: str) -> pd.DataFrame:
+    """Animal-day records of `value` with the keys the repeatability needs: the treatment-period group
+    (study x treatment x period) and the animal-period (animal x treatment x period)."""
+    cols = [c for c in ["studyId", "animal_id", "Treatment", "Period"] if c in days]
+    d = days[cols + [value]].dropna(subset=[value])
+    for c in ["Treatment", "Period"]:
+        if c not in d:
+            d = d.assign(**{c: np.nan})
+    return pd.DataFrame({
+        "studyId": d["studyId"].astype(str), "animal_id": d["animal_id"], value: d[value].astype(float),
+        "group": d.groupby(["studyId", "Treatment", "Period"], sort=False, dropna=False).ngroup(),
+        "segment": d.groupby(["studyId", "animal_id", "Treatment", "Period"], sort=False, dropna=False).ngroup(),
+    })
+
+
+def repeatability(data: pd.DataFrame, value: str) -> pd.DataFrame:
+    """Per study: how much of the record-to-record variation in `value` lies between animals.
+
+    `data` has studyId, animal_id, `value`, `group` (treatment-period group) and `segment` (animal-period,
+    nested in its group). Each group's mean is removed first, so treatment and period differences do not count
+    as animal differences. Then a nested one-way random-effects ANOVA (animal-periods within groups):
+      within-animal variance  s2w = MSW, record to record within an animal-period;
+      between-animal variance s2b = (MSB - MSW) / n0, n0 = (N - sum_groups(sum n_i^2 / N_group)) / (a - g);
+      repeatability of one record r = s2b / (s2b + s2w).
+    Missing when a study has fewer than 2 animal-periods more than groups, or no repeated records.
+    """
+    cols = ["studyId", "animals", "animal_periods", "records", "records_per_period", "sd_between", "sd_within", "r"]
+    d = data[["studyId", "animal_id", "group", "segment", value]].dropna(subset=[value])
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    s_code, studies = pd.factorize(d["studyId"])
+    g_code = d.groupby(["studyId", "group"], sort=False).ngroup().to_numpy()
+    a_code = d.groupby(["studyId", "segment"], sort=False).ngroup().to_numpy()
+    y = d[value].to_numpy(dtype=float)
+    n_s, n_g, n_a = len(studies), g_code.max() + 1, a_code.max() + 1
+    yc = y - (np.bincount(g_code, weights=y, minlength=n_g) / np.bincount(g_code, minlength=n_g))[g_code]
+    n_i = np.bincount(a_code, minlength=n_a).astype(float)
+    m_i = np.bincount(a_code, weights=yc, minlength=n_a) / n_i
+    a_study = np.zeros(n_a, dtype=np.int64)
+    a_study[a_code] = s_code
+    a_group = np.zeros(n_a, dtype=np.int64)
+    a_group[a_code] = g_code
+    g_study = np.zeros(n_g, dtype=np.int64)
+    g_study[g_code] = s_code
+    N = np.bincount(s_code, minlength=n_s).astype(float)
+    a = np.bincount(a_study, minlength=n_s).astype(float)
+    g = np.bincount(g_study, minlength=n_s).astype(float)
+    ssw = np.bincount(s_code, weights=(yc - m_i[a_code]) ** 2, minlength=n_s)
+    ssb = np.bincount(a_study, weights=n_i * m_i ** 2, minlength=n_s)
+    n_group = np.bincount(a_group, weights=n_i, minlength=n_g)
+    term = np.bincount(g_study, weights=np.bincount(a_group, weights=n_i ** 2, minlength=n_g) / n_group, minlength=n_s)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df_b, df_w = a - g, N - a
+        msw = np.where(df_w > 0, ssw / df_w, np.nan)
+        msb = np.where(df_b > 0, ssb / df_b, np.nan)
+        n0 = np.where(df_b > 0, (N - term) / df_b, np.nan)
+        s2b = np.where((df_b >= 1) & (df_w >= 1) & (n0 > 0), np.maximum(0.0, (msb - msw) / n0), np.nan)
+        s2w = np.where(np.isnan(s2b), np.nan, msw)
+        r = s2b / (s2b + s2w)
+    animals = d.groupby(s_code)["animal_id"].nunique().reindex(range(n_s)).to_numpy()
+    return pd.DataFrame({"studyId": list(studies), "animals": animals, "animal_periods": a.astype(int),
+                         "records": N.astype(int), "records_per_period": N / a, "sd_between": np.sqrt(s2b),
+                         "sd_within": np.sqrt(s2w), "r": r})
+
+
+def reliability_curve(r: float, k: np.ndarray) -> np.ndarray:
+    """Spearman-Brown: reliability of the mean of k records, R(k) = k r / (1 + (k - 1) r)."""
+    return k * r / (1 + (k - 1) * r)
+
+
+def records_needed(r: float, target: float) -> float:
+    """Smallest whole number of records whose mean reaches `target` reliability: k = t/(1-t) x (1-r)/r."""
+    if r is None or np.isnan(r) or r <= 0:
+        return np.inf
+    return float(np.ceil(target / (1 - target) * (1 - r) / r - 1e-9))
+
+
+# ---------------------------------------------------------------------------
+# Model code export and checking the AI explanation's numbers
+# ---------------------------------------------------------------------------
+def model_code(response: str, covariates: list[str], level: str, reference: str, two_levels: bool,
+               rules_name: str, screened: bool) -> dict[str, str]:
+    """R and Python code that refit the Model tab's mixed model from the Export tab's animal-days CSV."""
+    used = [response] + covariates
+    rhs = " + ".join(["Treatment"] + covariates)
+    period = level == "Animal-period mean"
+    notes = (f"# Reproduces the GEMS Analysis page model. Data: the Animal-days table from the Export tab\n"
+             f"# (gems_cohort_animal_days.csv); its daily gases already follow the visit rules \"{rules_name}\".\n"
+             + ("# The page's optional outlier screen was on; it is not repeated here.\n" if screened else ""))
+    r_vars = ", ".join(used)
+    r_lines = [notes + "library(dplyr)\nlibrary(lme4)\n", 'd <- read.csv("gems_cohort_animal_days.csv")']
+    if period:
+        r_lines.append("# one value per animal, treatment and period (mean of its days)\n"
+                       "d <- d %>%\n  group_by(studyId, animal_id, Treatment, Period) %>%\n"
+                       f"  summarise(across(c({r_vars}), ~ mean(.x, na.rm = TRUE)), .groups = \"drop\")")
+    r_lines.append("d <- d %>% filter(" + ", ".join(f"!is.na({c})" for c in used + ["Treatment"]) + ")")
+    r_lines.append(f'd$Treatment <- relevel(factor(d$Treatment), ref = "{reference}")')
+    random = "(1 | studyId/animal_id)" if two_levels else "(1 | animal_id)"
+    r_lines.append(f"m <- lmer({response} ~ {rhs} + {random}, data = d)  # REML, as on the page")
+    r_lines.append('summary(m)\nconfint(m, method = "Wald")  # 95% CIs of the fixed effects')
+    py_vars = ", ".join(f'"{c}"' for c in used)
+    p_lines = [notes + "import pandas as pd\nimport statsmodels.formula.api as smf\n",
+               'd = pd.read_csv("gems_cohort_animal_days.csv")']
+    if period:
+        p_lines.append("# one value per animal, treatment and period (mean of its days)\n"
+                       'd = (d.groupby(["studyId", "animal_id", "Treatment", "Period"], dropna=False)'
+                       f"[[{py_vars}]]\n       .mean().reset_index())")
+    p_lines.append(f'd = d.dropna(subset=[{py_vars}, "Treatment"])')
+    p_lines.append(f'reference = "{reference}"\nothers = sorted(set(d["Treatment"].astype(str)) - {{reference}})\n'
+                   'd["Treatment"] = pd.Categorical(d["Treatment"].astype(str), categories=[reference] + others)')
+    if two_levels:
+        p_lines.append(f'm = smf.mixedlm("{response} ~ {rhs}", d, groups="studyId", re_formula="1",\n'
+                       '                vc_formula={"animal_id": "0 + C(animal_id)"}).fit(method="lbfgs")  # REML')
+    else:
+        p_lines.append(f'm = smf.mixedlm("{response} ~ {rhs}", d, groups="animal_id").fit(method="lbfgs")  # REML')
+    p_lines.append("print(m.summary())")
+    return {"R": "\n".join(r_lines), "Python": "\n".join(p_lines)}
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
+
+
+def unverified_numbers(text: str, known: list[float]) -> list[str]:
+    """Numbers in an AI explanation that match none of the `known` result values at the precision written
+    (signs ignored, so "lowered by 68.2" matches -68.21). Not checked: small whole numbers (0-10, e.g. list
+    numbering), thresholds ("p < 0.001") and the confidence level in "95% CI"."""
+    values = np.abs(np.array([float(k) for k in known if k is not None and np.isfinite(float(k))]))
+    out = []
+    for m in _NUMBER.finditer(text):
+        s = m.group().replace(",", "")
+        x = abs(float(s))
+        before, after = text[max(0, m.start() - 3):m.start()].strip(), text[m.end():m.end() + 13].lower()
+        if ("." not in s and x <= 10) or before.endswith(("<", ">", "≤", "≥")) \
+                or after.startswith(("% ci", "% confidence", "%-ci")):
+            continue
+        decimals = len(s.split(".")[1]) if "." in s else 0
+        tol = 0.5 * 10 ** -decimals + 1e-12
+        if not len(values) or not np.any(np.abs(values - x) <= tol):
+            out.append(m.group())
+    return list(dict.fromkeys(out))

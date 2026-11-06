@@ -48,19 +48,26 @@ from gems_analysis import (  # noqa: E402
     facet_masks,
     load_dataset,
     load_visits,
+    model_code,
     numeric_columns,
     plot_sample,
+    records_needed,
+    reliability_curve,
+    repeatability,
+    repeatability_frame,
     robust_outliers,
     source_label,
     study_overview,
     study_treatment_means,
     synthetic_dir,
     treatment_effects,
+    unverified_numbers,
     variance_shares,
     visit_attrition,
     visit_rules_result,
     visit_step_label,
 )
+from gems_ai import interpret_model  # noqa: E402
 from gems_auth import get_current_user_info, require_authorized_user  # noqa: E402
 from gems_downloads import log_download  # noqa: E402
 from gems_stats import (  # noqa: E402
@@ -377,7 +384,8 @@ if cdays.empty:
 # Streamlit forgets the value of a widget that is not drawn, so the tabs' widget values are saved again
 # here: your choices are still there when you come back to a tab.
 TAB_WIDGETS = ["ov_study", "m_response", "m_level", "m_covariates", "m_screen", "m_screen_cols", "m_within",
-               "m_threshold", "m_reference", "qc_study", "qc_animals", *QC_KEYS.values()]
+               "m_threshold", "m_reference", "qc_study", "qc_animals", *QC_KEYS.values(),
+               "lab_unit", "lab_value", "lab_target"]
 for _k in TAB_WIDGETS:
     if _k in st.session_state:
         st.session_state[_k] = st.session_state[_k]
@@ -395,8 +403,8 @@ def keep(key: str, default, options=None, multi: bool = False) -> None:
             st.session_state[key] = default
 
 
-tab_overview, tab_qc, tab_model, tab_export = st.tabs(["Overview", "GreenFeed QC", "Model", "Export"],
-                                                      key="analysis_tab", on_change="rerun")
+tab_overview, tab_qc, tab_lab, tab_model, tab_export = st.tabs(
+    ["Overview", "GreenFeed QC", "Standardisation lab", "Model", "Export"], key="analysis_tab", on_change="rerun")
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +635,104 @@ def render_qc() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Standardisation lab: how many days (or visits) an animal needs for a reliable mean
+# ---------------------------------------------------------------------------
+def lab_figure(per_study: pd.DataFrame, pooled_r: float, target: float, k_max: int, unit: str) -> go.Figure:
+    """Reliability of an animal's mean against the number of records: each study (thin) and pooled (bold)."""
+    k = np.arange(1, k_max + 1)
+    fig = go.Figure()
+    xs, ys = [], []
+    for r in per_study["r"].dropna():
+        xs += [*k, None]
+        ys += [*reliability_curve(r, k), None]
+    if xs:
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="Each study", hoverinfo="skip",
+                                 line={"color": SERIES[0], "width": 1}, opacity=0.45))
+    if pooled_r is not None and not np.isnan(pooled_r):
+        fig.add_trace(go.Scatter(x=k, y=reliability_curve(pooled_r, k), mode="lines", name="All studies pooled",
+                                 line={"color": SERIES[1], "width": 3},
+                                 hovertemplate="%{x} " + unit.lower() + ": %{y:.2f}<extra>pooled</extra>"))
+        need = records_needed(pooled_r, target)
+        if np.isfinite(need) and need <= k_max:
+            fig.add_vline(x=need, line_dash="dot", line_color=SERIES[1])
+    fig.add_hline(y=target, line_dash="dash", line_color=OTHER)
+    fig.update_xaxes(title=f"{unit} per animal and period", range=[1, k_max])
+    fig.update_yaxes(title="Reliability of the animal's mean", range=[0, 1.02])
+    return fig
+
+
+def render_lab() -> None:
+    heading("How many GreenFeed days does an animal need?",
+            "How reliable an animal's average becomes as days (or visits) are added. Uses the values after your "
+            "GreenFeed visit rules, within each study, after removing treatment and period means, so only "
+            "differences between animals count as signal.")
+    labels = {**column_labels(dictionary, "kgAnimalDay"), **calculated_labels()}
+    c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="bottom")
+    keep("lab_unit", "Days")
+    unit = c1.segmented_control("Count", ["Days", "Visits"], key="lab_unit") or "Days"
+    gases = ["CH4_g_d", "CO2_g_d", "O2_g_d", "H2_g_d"]
+    options = numeric_columns(cdays) if unit == "Days" else [g for g in gases]
+    if not options:
+        st.info("The cohort has no numeric measurements.")
+        return
+    keep("lab_value", "CH4_g_d" if "CH4_g_d" in options else options[0], options)
+    value = c2.selectbox("Measurement", options, key="lab_value", format_func=lambda c: labels.get(c, c))
+    keep("lab_target", 0.9)
+    target = c3.segmented_control("Target reliability", [0.8, 0.9, 0.95], key="lab_target",
+                                  format_func=lambda x: f"{x:.2f}") or 0.9
+
+    if unit == "Days":
+        frame = repeatability_frame(cdays, value)
+    else:
+        try:
+            visits = load_visits(source)
+            status = visit_rules_result(source, tuple(sorted(visit_rules.items())))["status"]
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not load the GreenFeed visits from {source}: {exc}")
+            return
+        mask = (status == 0) & visits["animal_id"].isin(cohort_animals).to_numpy()
+        if date_from is not None:
+            mask &= (visits["Date"] >= pd.Timestamp(date_from)).to_numpy()
+        if date_to is not None:
+            mask &= (visits["Date"] <= pd.Timestamp(date_to)).to_numpy()
+        vk = visits[mask]
+        frame = pd.DataFrame({"studyId": vk["studyId"], "animal_id": vk["animal_id"], value: vk[value],
+                              "group": vk["_group"], "segment": vk["_segment"]})
+    per = repeatability(frame, value)
+    pooled = repeatability(frame.assign(studyId="All studies"), value)
+    if per.empty or pooled.empty:
+        st.info("Not enough records in the cohort for this measurement.")
+        return
+    pooled_r = float(pooled["r"].iloc[0])
+    per["needed"] = [records_needed(r, target) for r in per["r"]]
+    finite = per["needed"].replace(np.inf, np.nan).dropna()
+    word = unit.lower()
+    need_pooled = records_needed(pooled_r, target)
+    tiles([
+        (f"Repeatability of one {word[:-1]}", "—" if np.isnan(pooled_r) else f"{pooled_r:.2f}",
+         "share of the variation that is between animals"),
+        (f"{unit} needed for {target:.2f}", "not reached" if not np.isfinite(need_pooled) else f"{need_pooled:.0f}",
+         "all studies pooled"),
+        (f"Median {word} needed per study", "—" if finite.empty else f"{finite.median():.0f}",
+         f"{len(finite)} of {len(per)} studies with an estimate"),
+    ])
+    k_max = int(min(200, max(30, np.nanpercentile(finite, 90) * 1.5 if len(finite) else 30,
+                             need_pooled * 1.5 if np.isfinite(need_pooled) else 30)))
+    heading("Reliability of an animal's mean", f"Thin lines: each study. Bold: all studies pooled; the dotted line "
+            f"marks where it reaches the target (dashed). R(k) = k·r / (1 + (k − 1)·r), Spearman–Brown.")
+    show(lab_figure(per, pooled_r, target, k_max, unit), 380)
+    heading("By study", f"{unit} needed = target/(1 − target) × (1 − r)/r. \"Enough now?\" compares it with the study's "
+            f"average {word} per animal and period.")
+    table = per.assign(enough=np.where(per["records_per_period"] >= per["needed"], "Yes", "No")).sort_values("needed")
+    table = table.rename(columns={
+        "studyId": "Study", "animals": "Animals", "animal_periods": "Animal-periods", "records": unit,
+        "records_per_period": f"{unit} per animal-period", "sd_between": "SD between animals",
+        "sd_within": "SD within animal", "r": f"Repeatability (one {word[:-1]})", "needed": f"{unit} needed",
+        "enough": "Enough now?"})
+    st.dataframe(table.replace(np.inf, np.nan).round(2), hide_index=True, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 def render_model() -> None:
@@ -788,6 +894,54 @@ def render_model() -> None:
         f2.markdown("**Variance components**")
         f2.dataframe(variances.round(3), hide_index=True, use_container_width=True)
 
+        rules_text = preset_name + (" (edited)" if rules_edited else "")
+        with st.expander("Code to reproduce this model (R and Python)"):
+            code = model_code(response, covariates, level, reference, len(group_cols) == 2, rules_text,
+                              bool(screen and removed.any()))
+            st.caption("Download the Animal-days table on the Export tab first (gems_cohort_animal_days.csv). "
+                       "R needs the dplyr and lme4 packages; both versions give the page's estimates.")
+            r_tab, py_tab = st.tabs(["R", "Python"])
+            r_tab.code(code["R"], language="r")
+            py_tab.code(code["Python"], language="python")
+
+        with st.expander("AI explanation (optional)"):
+            st.caption("The AI gets only the model's results (estimates, intervals, variance shares and counts), "
+                       "not the data rows, and writes a plain-language explanation. statsmodels did all the "
+                       "math. Every number the AI quotes is checked against the results.")
+            context = {
+                "model": f"{formula}; random intercepts for {random_text}; fitted on {level.lower()} records",
+                "measurement": unit_label, "reference treatment": reference,
+                "cohort": {"studies": int(kept["studyId"].nunique()), "animals": int(kept["animal_id"].nunique()),
+                           "records": int(len(kept))},
+                "GreenFeed visit rules": rules_text,
+                "note": "Treatment names are study-specific; a pooled treatment effect assumes the same name means "
+                        "the same treatment in every study.",
+                "fit": stats, "fixed effects": coefs.drop(columns=["p_value"], errors="ignore").to_dict("records"),
+                "p values": res["coefs"][["term", "p_value"]].to_dict("records") if "p_value" in res["coefs"] else [],
+                "variance shares (%)": shares.to_dict("records") if len(shares) else [],
+            }
+            if st.button("Explain these results", key="m_explain"):
+                with st.spinner("Asking the AI…"):
+                    try:
+                        text = interpret_model(json.dumps(context, indent=2, default=str))
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"The AI call failed: {exc}")
+                        text = ""
+                if text:
+                    known = [v for v in pd.json_normalize(json.loads(json.dumps(context, default=str)), sep=".")
+                             .to_numpy().ravel() if isinstance(v, (int, float))]
+                    for part in [coefs, res["coefs"], shares]:
+                        known += [float(x) for x in part.select_dtypes("number").to_numpy().ravel() if pd.notna(x)]
+                    st.session_state["m_explanation"] = (spec, text, unverified_numbers(text, known))
+            saved = st.session_state.get("m_explanation")
+            if saved and saved[0] == spec:
+                st.markdown(saved[1])
+                if saved[2]:
+                    st.warning("These numbers in the explanation were not found in the results; check them before "
+                               "using the text: " + ", ".join(saved[2]))
+                else:
+                    st.caption("Every number in the explanation matches the results.")
+
 
 # ---------------------------------------------------------------------------
 # Export
@@ -852,6 +1006,9 @@ if tab_overview.open:
 if tab_qc.open:
     with tab_qc:
         render_qc()
+if tab_lab.open:
+    with tab_lab:
+        render_lab()
 if tab_model.open:
     with tab_model:
         render_model()
