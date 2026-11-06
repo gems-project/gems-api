@@ -259,7 +259,7 @@ def require_authorized_user() -> str:
     if not info.is_authenticated:
         st.error("Sign in is required to access this page.")
         st.info(
-            "You may sign in with Auth0, but access to Explore, Modeling, Chat, and API Access "
+            "You may sign in with Auth0, but access to Analysis, Explore, Modeling, Chat, and API Access "
             "still requires administrator approval and a verified email."
         )
         st.markdown(
@@ -282,7 +282,7 @@ def require_authorized_user() -> str:
 
     st.write(
         f"Signed in as **{info.email}**. The public landing page is open to anyone, "
-        "but Explore, Modeling, Chat, and API Access require administrator approval "
+        "but Analysis, Explore, Modeling, Chat, and API Access require administrator approval "
         "and a verified email. Ask the dashboard administrator to add your email to "
         "the allowlist if you need data access."
     )

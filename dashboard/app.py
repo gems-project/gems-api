@@ -911,7 +911,7 @@ def _render_home() -> None:
         st.sidebar.markdown("### GEMS Dashboard")
         st.sidebar.info(
             "Browse this overview without an account. You may sign in, but access to "
-            "Explore, Modeling, Chat, and API Access still requires administrator "
+            "Analysis, Explore, Modeling, Chat, and API Access still requires administrator "
             "approval and a verified email."
         )
         st.sidebar.markdown(sign_in_button_html("Sign in"), unsafe_allow_html=True)

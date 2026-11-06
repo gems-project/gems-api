@@ -69,13 +69,15 @@ Do **not** change `AUTH0_DOMAIN` in Azure — that stays your Auth0 tenant hostn
 Access has two tiers:
 
 - **Public tier:** any signed-in user can see the landing page.
-- **Elevated/data tier:** a user can access Explore, Modeling, Chat, and API Access only when:
+- **Elevated/data tier:** a user can access Analysis, Explore, Modeling, Chat, and API Access only when:
   - their email is listed in `ALLOWED_USERS`, and
   - Auth0 reports `email_verified == true`.
 
 Operational rule: `gems-dashboard.ALLOWED_USERS` controls dashboard pages. `GEMS-API.ALLOWED_API_USERS` controls API-tier access. A user needs to be in both lists to see the dashboard API Access page and generate/use API keys.
 
 The API Access page has one extra gate: verified dashboard users can only generate API keys when `GEMS-API` confirms their email is in `ALLOWED_API_USERS`.
+
+The Analysis page follows the same rule for data downloads: any `ALLOWED_USERS` member can use every tab and download the cohort recipe and the data dictionary, but the cohort's data tables (CSV) download only for users in `ALLOWED_API_USERS`. Each data download is logged with the user's email, the table, the row count and the recipe.
 
 If a user is listed in `ALLOWED_USERS` but has not verified their email, the dashboard treats them as public-tier and shows:
 
@@ -148,7 +150,7 @@ Manual unverified path test:
 1. Add a test email to `ALLOWED_USERS`.
 2. Sign in with that Auth0 user before clicking the verification email.
 3. Confirm the Home page is visible.
-4. Confirm Explore, Modeling, Chat, and API Access are blocked.
+4. Confirm Analysis, Explore, Modeling, Chat, and API Access are blocked.
 5. Confirm the email verification banner appears.
 6. Click the Auth0 verification link.
 7. Refresh the dashboard.

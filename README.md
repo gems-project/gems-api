@@ -11,7 +11,7 @@ This repository now contains three operational pieces:
 | Folder | Purpose | Main doc |
 |---|---|---|
 | [`API/`](API/) | FastAPI service for allowlisted Databricks gold-table CSV export over HTTPS (`X-API-Key`). | [`API/README.md`](API/README.md) |
-| [`dashboard/`](dashboard/) | Streamlit dashboard (Home, Explore, Modeling, Chat, Download) with Entra sign-in and in-app data allowlist controls. | [`dashboard/README.md`](dashboard/README.md) |
+| [`dashboard/`](dashboard/) | Streamlit dashboard (Home, Analysis, Explore, Modeling, Chat, API Access) with Entra sign-in and in-app data allowlist controls. | [`dashboard/README.md`](dashboard/README.md) |
 | [`Delta sharing/`](Delta%20sharing/) | Python + R scripts to list/download tables from a Databricks share via `config.share`. | [`Delta sharing/README.md`](Delta%20sharing/README.md) |
 | [`tools/`](tools/) | Operational scripts (dashboard deploy, env/debug helpers, table checks, logo embedding utility). | Inline script docs |
 
